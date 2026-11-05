@@ -11,6 +11,11 @@ from pathlib import Path
 
 import PyInstaller.__main__
 
+# GitHub Actions 的 Windows 主控台是 cp1252，印中文會出錯
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 ROOT = Path(__file__).resolve().parent
 BUILD = ROOT / "build"
 BUILD.mkdir(exist_ok=True)
