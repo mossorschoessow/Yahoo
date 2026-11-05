@@ -1,0 +1,40 @@
+[
+  {
+    "name": "Switch 有機EL 主機",
+    "enabled": true,
+    "keyword": "ニンテンドースイッチ 有機EL 本体",
+    "description": "想買 Nintendo Switch 有機EL 主機，功能正常、螢幕無烙印無明顯刮痕，主機、Joy-Con、底座、充電器最好都齊全。不要日版以外的改機、不要ジャンク。可接受輕微使用痕跡。",
+    "min_price": 15000,
+    "max_price": 30000,
+    "condition": "used",
+    "listing_type": "any",
+    "sort": "new",
+    "max_pages": 1,
+    "exclude_words": ["ジャンク", "部品取り", "箱のみ", "空箱", "写真のみ", "ケース", "カバー", "フィルム", "ソフト"],
+    "require_words": [],
+    "individual_only": false,
+    "include_fleamarket": true,
+    "min_seller_rating": 97,
+    "max_bids": null,
+    "max_end_hours": null,
+    "interval_minutes": 15,
+    "ai_enabled": true,
+    "notify_min_score": 75
+  },
+  {
+    "name": "富士 X100V 快結束的拍賣",
+    "enabled": false,
+    "keyword": "FUJIFILM X100V",
+    "description": "富士 X100V 相機，機身外觀良好、快門數低者優先，有原廠電池與充電器。不要鏡頭有霉、有刮傷、無法開機的。",
+    "min_price": 100000,
+    "max_price": 220000,
+    "condition": "used",
+    "listing_type": "auction",
+    "sort": "end",
+    "max_end_hours": 6,
+    "max_bids": 15,
+    "exclude_words": ["ジャンク", "部品取り", "ケース", "フード", "ストラップ", "バッテリーのみ"],
+    "interval_minutes": 20,
+    "notify_min_score": 70
+  }
+]

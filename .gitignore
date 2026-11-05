@@ -1,0 +1,6 @@
+.env
+.venv/
+data/
+logs/
+tasks.json
+__pycache__/
