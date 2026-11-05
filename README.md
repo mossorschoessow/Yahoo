@@ -12,10 +12,33 @@
 | 價格參考 | 自己累積的價格歷史 | 直接查日拍「落札相場」（已結束拍賣的成交價），算中位數 / P25 / P75 |
 | 商品來源 | 閒魚 | 日拍拍賣 + 定額 + PayPayフリマ |
 | 沒有 AI 時 | 不能用 | 自動改用「規則模式」：現價 ≤ 成交中位數 × 70% 就通知 |
-| 介面 | Vue 前端 | 單頁 Web 介面（結果 / 任務 / 日誌） |
+| 介面 | Vue 前端 | Windows 桌面程式 / 單頁 Web 介面（結果 / 任務 / 日誌 / 設定） |
 | 通知 | ntfy、企業微信、Bark、Telegram… | Telegram、Discord、ntfy、Bark、通用 Webhook |
 
-## 安裝
+## 桌面版（Windows，推薦）
+
+1. 到 [Releases](../../releases) 下載 `YahooAuctionMonitor.exe`，雙擊執行，不用安裝 Python。
+   - 第一次執行時 Windows 可能跳出「Windows 已保護您的電腦」，這是因為程式沒有付費數位簽章：按「其他資訊」→「仍要執行」。
+2. 打開「**設定**」分頁，填 AI 的 API Key 和至少一種通知方式，按「測試 AI 連線」、「發送測試通知」確認沒問題。
+3. 到「**任務**」分頁編輯範例任務或新增任務，勾選「啟用」。範例任務預設都是停用的。
+
+使用方式：
+- **關閉視窗不會結束程式**，程式會縮到右下角系統匣繼續監控。要真的結束，請在系統匣圖示按右鍵 →「結束」。
+- 系統匣選單可以「立即執行全部任務」、「開啟資料夾」，也可以打開「開機時自動啟動」。
+- 同時只能開一個；再雙擊 exe 會叫出已經在跑的視窗。
+- 設定、任務和結果都存在 `%LOCALAPPDATA%\YahooAuctionMonitor`，更新 exe 不會遺失資料。
+- 視窗使用 Windows 內建的 Edge WebView2（Windows 10/11 都有）。如果沒有，會改用預設瀏覽器開啟。
+
+自己打包 exe：
+
+```bash
+pip install -r requirements.txt -r requirements-desktop.txt
+python build.py            # 產生 dist/YahooAuctionMonitor.exe
+```
+
+或推送 `v1.0.0` 這類標籤到 GitHub，Actions 會自動打包並建立 Release（`.github/workflows/release.yml`）。
+
+## 從原始碼執行
 
 需要 Python 3.10 以上。
 
@@ -28,7 +51,9 @@ pip install -r requirements.txt
 
 ## 設定
 
-1. **`.env`**：填 AI 和通知設定（說明都寫在檔案裡）。
+可以直接在 Web 介面的「設定」分頁填寫，或手動編輯：
+
+1. **`.env`**：把 `.env.example` 複製成 `.env`，填 AI 和通知設定（說明都寫在檔案裡）。
    - `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL_NAME`：任何 OpenAI 相容 API，模型**要能看圖**（例如 gpt-4o-mini、Gemini、Qwen-VL 等）。
    - 通知至少設一個，最推薦 **Telegram** 或 **Discord Webhook**（台灣用起來最順）。
    - `JPY_TO_LOCAL_RATE=0.21` 可以在通知裡順便顯示台幣。

@@ -18,6 +18,22 @@ log = logging.getLogger(__name__)
 _client: AsyncOpenAI | None = None
 
 
+def reset_client() -> None:
+    """設定變更後呼叫，下次請求會用新的 API Key / 位址。"""
+    global _client
+    _client = None
+
+
+async def test_connection() -> str:
+    """設定頁的「測試 AI」：送一個純文字小請求。"""
+    resp = await client().chat.completions.create(
+        model=config.OPENAI_MODEL_NAME,
+        messages=[{"role": "user", "content": "請只回覆這個 JSON：{\"ok\": true}"}],
+        max_tokens=20,
+    )
+    return (resp.choices[0].message.content or "").strip()
+
+
 def client() -> AsyncOpenAI:
     global _client
     if _client is None:
