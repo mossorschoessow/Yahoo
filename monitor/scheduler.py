@@ -7,6 +7,7 @@ import logging
 import time
 
 from . import runner, storage
+from .i18n import tr
 
 log = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ class Scheduler:
             try:
                 await runner.run_task(task, progress=lambda m: self.log(task["name"], m))
             except Exception as e:
-                self.log(task["name"], f"❌ 失敗：{e}")
+                self.log(task["name"], tr("❌ 失敗：{e}").format(e=e))
             finally:
                 self.running = None
                 self.next_run[task["name"]] = time.time() + task["interval_minutes"] * 60

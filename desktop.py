@@ -16,6 +16,7 @@ import time
 import webbrowser
 
 from monitor import config
+from monitor.i18n import tr
 
 INSTANCE_PORT = 47821  # 單一實例鎖用的本機連接埠
 log = logging.getLogger("desktop")
@@ -30,7 +31,8 @@ def setup_logging() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
-def message_box(text: str, title: str = config.APP_TITLE) -> None:
+def message_box(text: str, title: str | None = None) -> None:
+    title = title or tr(config.APP_TITLE)
     if sys.platform == "win32":
         import ctypes
         ctypes.windll.user32.MessageBoxW(None, text, title, 0x40)
@@ -76,7 +78,7 @@ def free_port(preferred: int) -> int:
                 return s.getsockname()[1]
             except OSError:
                 continue
-    raise RuntimeError("找不到可用的連接埠")
+    raise RuntimeError(tr("找不到可用的連接埠"))
 
 
 class Server:
@@ -101,7 +103,7 @@ class Server:
             if not self.thread.is_alive():
                 break
             time.sleep(0.05)
-        raise RuntimeError("Web 伺服器啟動失敗，詳情請看 logs/monitor.log")
+        raise RuntimeError(tr("Web 伺服器啟動失敗，詳情請看 logs/monitor.log"))
 
     def stop(self) -> None:
         self.server.should_exit = True
@@ -166,7 +168,7 @@ class DesktopApp:
         if not self.hint_shown:
             self.hint_shown = True
             try:
-                self.tray.notify("程式仍在背景監控中，可以從右下角系統匣圖示叫出視窗或結束。", config.APP_TITLE)
+                self.tray.notify(tr("程式仍在背景監控中，可以從右下角系統匣圖示叫出視窗或結束。"), tr(config.APP_TITLE))
             except Exception:
                 pass
         return False  # 取消關閉 → 縮到系統匣
@@ -191,14 +193,14 @@ class DesktopApp:
             set_autostart(not autostart_enabled())
 
         items = [
-            pystray.MenuItem("開啟視窗", lambda: self.show(), default=True),
-            pystray.MenuItem("立即執行全部任務", run_all),
-            pystray.MenuItem("開啟資料夾", lambda: os.startfile(config.HOME_DIR) if hasattr(os, "startfile") else None),
+            pystray.MenuItem(lambda _i: tr("開啟視窗"), lambda: self.show(), default=True),
+            pystray.MenuItem(lambda _i: tr("立即執行全部任務"), run_all),
+            pystray.MenuItem(lambda _i: tr("開啟資料夾"), lambda: os.startfile(config.HOME_DIR) if hasattr(os, "startfile") else None),
         ]
         if autostart_supported():
-            items.append(pystray.MenuItem("開機時自動啟動", toggle_autostart, checked=lambda _i: autostart_enabled()))
-        items += [pystray.Menu.SEPARATOR, pystray.MenuItem("結束", lambda: self.quit())]
-        self.tray = pystray.Icon(config.APP_NAME, make_icon(64), config.APP_TITLE, pystray.Menu(*items))
+            items.append(pystray.MenuItem(lambda _i: tr("開機時自動啟動"), toggle_autostart, checked=lambda _i: autostart_enabled()))
+        items += [pystray.Menu.SEPARATOR, pystray.MenuItem(lambda _i: tr("結束"), lambda: self.quit())]
+        self.tray = pystray.Icon(config.APP_NAME, make_icon(64), tr(config.APP_TITLE), pystray.Menu(*items))
         try:
             self.tray.run_detached()
         except Exception as e:
@@ -228,7 +230,7 @@ class DesktopApp:
         if webview is not None:
             try:
                 self.window = webview.create_window(
-                    config.APP_TITLE, self.server.url, width=1200, height=820, min_size=(420, 500),
+                    tr(config.APP_TITLE), self.server.url, width=1200, height=820, min_size=(420, 500),
                     hidden=self.start_minimized and self.tray is not None,
                 )
                 self.window.events.closing += self.on_closing
@@ -265,7 +267,7 @@ def main() -> None:
         app.run()
     except Exception as e:
         log.exception("程式發生錯誤")
-        message_box(f"程式發生錯誤：\n{e}\n\n詳細記錄：{config.LOG_DIR / 'monitor.log'}")
+        message_box(tr("程式發生錯誤：\n{e}\n\n詳細記錄：{log}").format(e=e, log=config.LOG_DIR / "monitor.log"))
     finally:
         lock.close()
 

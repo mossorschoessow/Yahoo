@@ -8,10 +8,11 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from . import ai, config, notify, runner, storage
+from .i18n import tr
 from .scheduler import scheduler
 
 security = HTTPBasic(auto_error=False)
@@ -23,7 +24,7 @@ def auth(creds: HTTPBasicCredentials | None = Depends(security)) -> None:
     ok = creds and secrets.compare_digest(creds.username, config.WEB_USERNAME) \
         and secrets.compare_digest(creds.password, config.WEB_PASSWORD)
     if not ok:
-        raise HTTPException(401, "需要登入", headers={"WWW-Authenticate": "Basic"})
+        raise HTTPException(401, tr("需要登入"), headers={"WWW-Authenticate": "Basic"})
 
 
 @asynccontextmanager
@@ -38,9 +39,21 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title=config.APP_TITLE, lifespan=lifespan, dependencies=[Depends(auth)])
 
 
+_page_cache: dict[tuple[str, float], str] = {}
+
+
 @app.get("/")
-def index() -> FileResponse:
-    return FileResponse(config.STATIC_DIR / "index.html")
+def index() -> HTMLResponse:
+    path = config.STATIC_DIR / "index.html"
+    key = (config.LANG, path.stat().st_mtime)
+    if key not in _page_cache:
+        html = path.read_text(encoding="utf-8")
+        if config.LANG == "zh-CN":
+            html = tr(html).replace('lang="zh-Hant"', 'lang="zh-Hans"').replace(
+                '"Microsoft JhengHei", "PingFang TC"', '"Microsoft YaHei", "PingFang SC"')
+        _page_cache.clear()
+        _page_cache[key] = html
+    return HTMLResponse(_page_cache[key], headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/status")
@@ -56,6 +69,7 @@ def status() -> dict[str, Any]:
         "jpy_rate": config.JPY_TO_LOCAL_RATE,
         "local_currency": config.LOCAL_CURRENCY,
         "home_dir": str(config.HOME_DIR),
+        "lang": config.LANG,
         "first_run": not config.AI_ENABLED and not notify.channels(),
     }
 
@@ -75,7 +89,7 @@ def put_tasks(tasks: list[dict[str, Any]]) -> dict[str, Any]:
     for t in tasks:
         t = {k: v for k, v in t.items() if k != "last_run"}
         if not (t.get("keyword") or "").strip():
-            raise HTTPException(400, "每個任務都必須有關鍵字")
+            raise HTTPException(400, tr("每個任務都必須有關鍵字"))
         t["name"] = (t.get("name") or t["keyword"]).strip()
         clean.append(t)
     try:
@@ -88,7 +102,7 @@ def put_tasks(tasks: list[dict[str, Any]]) -> dict[str, Any]:
 @app.post("/api/tasks/{name}/run")
 def run_now(name: str) -> dict[str, Any]:
     if name not in {t["name"] for t in runner.load_tasks()}:
-        raise HTTPException(404, "找不到任務")
+        raise HTTPException(404, tr("找不到任務"))
     scheduler.trigger(name)
     return {"ok": True}
 
@@ -128,32 +142,35 @@ def put_settings(values: dict[str, Any]) -> dict[str, Any]:
 @app.post("/api/settings/test-ai")
 async def test_ai() -> dict[str, Any]:
     if not config.AI_ENABLED:
-        return {"ok": False, "message": "尚未填寫 API Key"}
+        return {"ok": False, "message": tr("尚未填寫 API Key")}
     try:
         reply = await ai.test_connection()
-        return {"ok": True, "message": f"連線成功，模型回覆：{reply[:200]}"}
+        return {"ok": True, "message": tr("連線成功，模型回覆：") + reply[:200]}
     except Exception as e:
-        return {"ok": False, "message": f"連線失敗：{e}"}
+        return {"ok": False, "message": tr("連線失敗：") + str(e)}
 
 
 @app.post("/api/settings/test-notify")
 async def test_notify() -> dict[str, Any]:
     res = await notify.send_test()
     if not res:
-        return {"ok": False, "message": "尚未設定任何通知管道"}
-    lines = [f"{ch}：{'✅ 成功' if err is None else '❌ ' + err}" for ch, err in res.items()]
+        return {"ok": False, "message": tr("尚未設定任何通知管道")}
+    lines = [f"{ch}：" + (tr("✅ 成功") if err is None else "❌ " + err) for ch, err in res.items()]
     return {"ok": all(e is None for e in res.values()), "message": "\n".join(lines)}
 
 
 @app.get("/api/prompt")
 def get_prompt() -> dict[str, str]:
-    return {"text": (config.PROMPTS_DIR / "base_prompt.txt").read_text(encoding="utf-8")}
+    pf = config.prompt_file()
+    if not pf.exists():
+        pf = config.PROMPTS_DIR / config.PROMPT_FILES["zh-TW"]
+    return {"text": pf.read_text(encoding="utf-8")}
 
 
 @app.put("/api/prompt")
 def put_prompt(body: dict[str, str]) -> dict[str, Any]:
     text = body.get("text", "")
     if "{{CRITERIA}}" not in text:
-        raise HTTPException(400, "提示詞必須保留 {{CRITERIA}}（任務需求會填在這裡）")
-    (config.PROMPTS_DIR / "base_prompt.txt").write_text(text, encoding="utf-8")
+        raise HTTPException(400, tr("提示詞必須保留 {{CRITERIA}}（任務需求會填在這裡）"))
+    config.prompt_file().write_text(text, encoding="utf-8")
     return {"ok": True}

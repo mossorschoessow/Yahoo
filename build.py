@@ -43,6 +43,7 @@ args = [
     "--add-data", f"{ROOT / 'tasks.example.json'}{sep}.",
     # uvicorn / pystray 有動態載入的模組
     "--collect-submodules", "uvicorn",
+    "--collect-data", "opencc",  # 繁簡轉換字典
     "--hidden-import", "pystray._win32",
     "--exclude-module", "tkinter",
 ]

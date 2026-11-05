@@ -81,6 +81,7 @@ code { background: var(--surface-2); padding: 0 4px; border-radius: 4px; }
     <button data-tab="settings">設定</button>
   </nav>
   <div id="status"></div>
+  <select id="lang-switch" aria-label="Language"></select>
 </div></header>
 
 <main>
@@ -195,7 +196,7 @@ async function loadSettings() {
       const id = "s-" + s.key, dis = s.locked ? "disabled title='由環境變數設定'" : "";
       let input;
       if (s.type === "bool") input = `<select id="${id}" ${dis}><option value="true" ${s.value === "true" ? "selected" : ""}>開啟</option><option value="false" ${s.value !== "true" ? "selected" : ""}>關閉</option></select>`;
-      else if (s.type === "choice") input = `<select id="${id}" ${dis}>${s.choices.map((c) => `<option ${c === s.value ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>`;
+      else if (s.type === "choice") input = `<select id="${id}" ${dis}>${s.choices.map((c, i) => `<option value="${esc(c)}" ${c === s.value ? "selected" : ""}>${esc((s.choice_labels || [])[i] || c)}</option>`).join("")}</select>`;
       else if (s.type === "secret") input = `<span class="pw"><input id="${id}" type="password" autocomplete="off" value="${esc(s.value)}" ${dis}><button class="btn" type="button" onclick="const i=this.previousElementSibling;i.type=i.type==='password'?'text':'password'">👁</button></span>`;
       else input = `<input id="${id}" ${s.type === "int" || s.type === "float" ? 'inputmode="decimal"' : ""} value="${esc(s.value)}" placeholder="${esc(s.default)}" ${dis}>`;
       return `<label>${esc(s.label)}${input}${s.help ? `<span class="h">${esc(s.help)}</span>` : ""}</label>`;
@@ -238,7 +239,7 @@ async function loadResults() {
     const kind = it.is_fleamarket ? "PayPayフリマ" : it.is_fixed_price ? "定額" : `拍賣 · ${it.bid_count} 人出價`;
     const ratio = m && m.median ? ` · 行情 ${yen(m.median)}（${Math.round(it.price / m.median * 100)}%）` : "";
     const lv = a.deal_level || "";
-    const cls = /撿漏|划算/.test(lv) ? "good" : /偏貴|不建議/.test(lv) ? "bad" : "";
+    const cls = /撿漏|捡漏|划算/.test(lv) ? "good" : /偏貴|偏贵|不建議|不建议/.test(lv) ? "bad" : "";
     return `<div class="card ${r.recommended ? "rec" : ""}">
       <div class="top">
         <img src="${esc(r.image)}" loading="lazy" referrerpolicy="no-referrer" alt="">
@@ -339,7 +340,15 @@ async function refresh() {
   if (!$("#tab-tasks").hidden) await loadTasks();
   if (!$("#tab-logs").hidden) await loadLogs();
 }
-refresh();
+// 語言切換：選項文字用跳脫字元寫，避免簡體模式整頁轉換時把「繁體」也轉掉
+const LANGS = [["zh-TW", "\u7e41\u9ad4\u4e2d\u6587"], ["zh-CN", "\u7b80\u4f53\u4e2d\u6587"]];
+$("#lang-switch").innerHTML = LANGS.map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
+$("#lang-switch").onchange = async (e) => {
+  await api("/api/settings", { method: "PUT", body: JSON.stringify({ UI_LANGUAGE: e.target.value }) });
+  location.reload();
+};
+
+refresh().then(() => { $("#lang-switch").value = STATUS.lang; });
 setInterval(() => { if (!$("#dlg").open) refresh(); }, 8000);
 </script>
 </body>
