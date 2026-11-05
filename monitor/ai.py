@@ -12,6 +12,7 @@ import httpx
 from openai import AsyncOpenAI
 
 from . import config
+from .i18n import tr
 
 log = logging.getLogger(__name__)
 
@@ -47,7 +48,10 @@ def client() -> AsyncOpenAI:
 
 
 def load_prompt(task: dict[str, Any]) -> str:
-    base = (config.PROMPTS_DIR / "base_prompt.txt").read_text(encoding="utf-8")
+    pf = config.prompt_file()
+    if not pf.exists():
+        pf = config.PROMPTS_DIR / config.PROMPT_FILES["zh-TW"]
+    base = pf.read_text(encoding="utf-8")
     criteria = (task.get("description") or "").strip()
     crit_file = task.get("criteria_file")
     if crit_file:
@@ -55,7 +59,7 @@ def load_prompt(task: dict[str, Any]) -> str:
         if p.exists():
             criteria = (criteria + "\n\n" + p.read_text(encoding="utf-8")).strip()
     if not criteria:
-        criteria = f"我在找「{task['keyword']}」，希望以低於行情的價格買到狀況良好的商品。"
+        criteria = tr("我在找「{kw}」，希望以低於行情的價格買到狀況良好的商品。").format(kw=task["keyword"])
     return base.replace("{{CRITERIA}}", criteria)
 
 
@@ -87,13 +91,13 @@ def _item_for_ai(item: dict[str, Any], market: dict | None) -> dict[str, Any]:
         "seller_is_store", "seller_good_rating", "seller_rating_count", "category", "description", "detail",
     ]
     data = {k: item.get(k) for k in keys}
-    data["listing_type"] = "PayPayフリマ（定額）" if item.get("is_fleamarket") else ("定額 / 即決" if item.get("is_fixed_price") else "拍賣")
+    data["listing_type"] = "PayPayフリマ（定額）" if item.get("is_fleamarket") else ("定額 / 即決" if item.get("is_fixed_price") else tr("拍賣"))
     if data.get("description") and len(data["description"]) > 4000:
         data["description"] = data["description"][:4000] + "…（以下省略）"
     if market:
-        data["market"] = {"說明": "近期同關鍵字已結束拍賣的成交價統計（日圓）", **market}
+        data["market"] = {tr("說明"): tr("近期同關鍵字已結束拍賣的成交價統計（日圓）"), **market}
         if market.get("median"):
-            data["market"]["現價相對中位數"] = f"{item['price'] / market['median'] * 100:.0f}%"
+            data["market"][tr("現價相對中位數")] = f"{item['price'] / market['median'] * 100:.0f}%"
     return data
 
 
@@ -121,10 +125,10 @@ def parse_json_response(text: str) -> dict[str, Any]:
 async def analyze(item: dict[str, Any], task: dict[str, Any], market: dict | None, http: httpx.AsyncClient) -> dict[str, Any]:
     prompt = load_prompt(task)
     product_json = json.dumps(_item_for_ai(item, market), ensure_ascii=False, indent=1)
-    text = f"以下是要分析的商品 JSON：\n```json\n{product_json}\n```\n\n{prompt}"
+    text = tr("以下是要分析的商品 JSON：") + f"\n```json\n{product_json}\n```\n\n{prompt}"
     images = await _image_payloads(http, item.get("images") or [item.get("image", "")])
     if not images:
-        text += "\n\n補充：本次沒有提供圖片，請只根據文字判斷，不要推測圖片內容。"
+        text += "\n\n" + tr("補充：本次沒有提供圖片，請只根據文字判斷，不要推測圖片內容。")
     content: Any = [{"type": "image_url", "image_url": {"url": u}} for u in images] + [{"type": "text", "text": text}] \
         if images else text
 
@@ -153,24 +157,24 @@ async def analyze(item: dict[str, Any], task: dict[str, Any], market: dict | Non
                 continue
             log.warning("AI 分析失敗（第 %d 次）：%s", attempt + 1, e)
             await asyncio.sleep(3 * (attempt + 1))
-    raise RuntimeError(f"AI 分析失敗：{last_err}")
+    raise RuntimeError(tr("AI 分析失敗：{e}").format(e=last_err))
 
 
 def rule_based(item: dict[str, Any], task: dict[str, Any], market: dict | None) -> dict[str, Any]:
     """未設定 AI 時的退路：單純用「現價 vs 成交中位數」判斷。"""
     ratio = float(task.get("deal_ratio") or 0.7)
     if not market or not market.get("median"):
-        return {"is_recommended": False, "score": 0, "deal_level": "無行情資料",
-                "reason": "未設定 AI，且找不到成交行情，無法判斷", "risk_tags": []}
+        return {"is_recommended": False, "score": 0, "deal_level": tr("無行情資料"),
+                "reason": tr("未設定 AI，且找不到成交行情，無法判斷"), "risk_tags": []}
     r = item["price"] / market["median"]
     # 拍賣還會漲，只對定額 / フリマ 或快結束的拍賣有意義
     is_final_price = item.get("is_fixed_price") or item.get("is_fleamarket") or (item.get("left_seconds") or 1e9) < 3600
     rec = r <= ratio and is_final_price
-    level = "超值撿漏" if r <= ratio * 0.8 else "划算" if r <= ratio else "行情價" if r <= 1.1 else "偏貴"
+    level = tr("超值撿漏" if r <= ratio * 0.8 else "划算" if r <= ratio else "行情價" if r <= 1.1 else "偏貴")
     return {
         "is_recommended": bool(rec),
         "score": max(0, min(100, int((1.2 - r) * 100))) if rec else 0,
         "deal_level": level,
-        "reason": f"現價為近期成交中位數的 {r * 100:.0f}%（規則模式，未經 AI 檢查商品狀況，請自行確認）",
-        "risk_tags": [] if is_final_price else ["拍賣中，價格可能再上漲"],
+        "reason": tr("現價為近期成交中位數的 {r:.0f}%（規則模式，未經 AI 檢查商品狀況，請自行確認）").format(r=r * 100),
+        "risk_tags": [] if is_final_price else [tr("拍賣中，價格可能再上漲")],
     }

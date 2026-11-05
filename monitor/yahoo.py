@@ -17,6 +17,7 @@ from urllib.parse import urlencode
 import httpx
 
 from . import config
+from .i18n import tr
 
 log = logging.getLogger(__name__)
 
@@ -87,7 +88,7 @@ class Item:
 def _extract_next_data(html: str) -> dict[str, Any]:
     m = _NEXT_DATA_RE.search(html)
     if not m:
-        raise YahooError("頁面中找不到 __NEXT_DATA__，日拍頁面結構可能改版了")
+        raise YahooError(tr("頁面中找不到 __NEXT_DATA__，日拍頁面結構可能改版了"))
     return json.loads(m.group(1))
 
 
@@ -122,7 +123,7 @@ async def _get(client: httpx.AsyncClient, url: str, *, retries: int = 2) -> str:
             if r.status_code == 404:
                 raise YahooError(f"404 Not Found: {url}")
             if r.status_code in (403, 429, 503):
-                raise YahooError(f"被日拍拒絕（HTTP {r.status_code}），請調大請求間隔")
+                raise YahooError(tr("被日拍拒絕（HTTP {code}），請調大請求間隔").format(code=r.status_code))
             r.raise_for_status()
             return r.text
         except YahooError:
@@ -130,7 +131,7 @@ async def _get(client: httpx.AsyncClient, url: str, *, retries: int = 2) -> str:
         except Exception as e:  # 網路錯誤重試
             last = e
             await asyncio.sleep(3 * (attempt + 1))
-    raise YahooError(f"請求失敗：{url}：{last}")
+    raise YahooError(tr("請求失敗：{url}：{err}").format(url=url, err=last))
 
 
 # --------------------------------------------------------------------------- 搜尋
@@ -229,7 +230,7 @@ async def fetch_detail(client: httpx.AsyncClient, item: Item) -> Item:
     if item.is_fleamarket:
         d = ((state.get("itemsState") or {}).get("items") or {}).get("item") or {}
         if not d:
-            raise YahooError("PayPayフリマ 商品頁找不到商品資料")
+            raise YahooError("PayPayフリマ " + tr("商品頁找不到商品資料"))
         item.description = _join_description(d.get("description"))
         item.images = [i["url"] for i in d.get("images") or [] if isinstance(i, dict) and i.get("url")]
         cond = d.get("condition") or {}
@@ -250,7 +251,7 @@ async def fetch_detail(client: httpx.AsyncClient, item: Item) -> Item:
     else:
         d = ((state.get("item") or {}).get("detail") or {}).get("item") or {}
         if not d:
-            raise YahooError("日拍商品頁找不到商品資料")
+            raise YahooError(tr("日拍商品頁找不到商品資料"))
         item.description = _join_description(d.get("description"))
         item.images = [i["image"] for i in d.get("img") or [] if isinstance(i, dict) and i.get("image")]
         if d.get("conditionName"):

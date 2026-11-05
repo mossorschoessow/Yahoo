@@ -1,5 +1,7 @@
 # 雅虎日拍撿漏監控（Yahoo!オークション AI Monitor）
 
+**繁體中文** | [简体中文](README.zh-CN.md)
+
 參考 [ai-goofish-monitor](https://github.com/Usagi-org/ai-goofish-monitor)（閒魚 AI 監控）的概念，改寫成 **雅虎日拍 + PayPayフリマ** 版本。
 
 定時搜尋日拍 → 用條件預先篩選 → 抓商品頁（說明、圖片、賣家評價）→ 查**近期成交行情** → 交給多模態 AI 判斷 → 值得買就推播到手機。
@@ -28,6 +30,7 @@
 - 同時只能開一個；再雙擊 exe 會叫出已經在跑的視窗。
 - 設定、任務和結果都存在 `%LOCALAPPDATA%\YahooAuctionMonitor`，更新 exe 不會遺失資料。
 - 視窗使用 Windows 內建的 Edge WebView2（Windows 10/11 都有）。如果沒有，會改用預設瀏覽器開啟。
+- 右上角可以切換**繁體中文 / 简体中文**；通知內容和 AI 回覆也會跟著切換。預設跟隨 Windows 的語言。
 
 自己打包 exe：
 
@@ -124,5 +127,9 @@ monitor/storage.py    SQLite（data/app.sqlite3）
 monitor/scheduler.py  定時排程
 monitor/web.py        Web API
 static/index.html     Web 介面
-prompts/base_prompt.txt  AI 提示詞（可自行修改）
+prompts/base_prompt.txt        AI 提示詞・繁體（可自行修改）
+prompts/base_prompt.zh-CN.txt  AI 提示詞・簡體
+monitor/i18n.py       繁體 / 簡體切換
+desktop.py            桌面版入口（視窗、系統匣）
+build.py              打包成 exe
 ```

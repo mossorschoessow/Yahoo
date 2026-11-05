@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from . import ai, config, notify, storage, yahoo
+from .i18n import tr
 
 log = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ def load_tasks() -> list[dict[str, Any]]:
 def save_tasks(tasks: list[dict[str, Any]]) -> None:
     names = [t.get("name") for t in tasks]
     if len(names) != len(set(names)):
-        raise ValueError("任務名稱不能重複")
+        raise ValueError(tr("任務名稱不能重複"))
     config.TASKS_FILE.write_text(json.dumps(tasks, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -115,7 +116,7 @@ async def run_task(task: dict[str, Any], *, progress=None) -> dict[str, Any]:
             for page in range(1, task["max_pages"] + 1):
                 items, total = await yahoo.search(client, task, page)
                 scanned += len(items)
-                say(f"第 {page} 頁：{len(items)} 筆（總共 {total} 筆）")
+                say(tr("第 {page} 頁：{n} 筆（總共 {total} 筆）").format(page=page, n=len(items), total=total))
                 for it in items:
                     if it.id in seen:
                         continue
@@ -129,51 +130,51 @@ async def run_task(task: dict[str, Any], *, progress=None) -> dict[str, Any]:
                 await asyncio.sleep(config.REQUEST_DELAY_SECONDS)
 
             if not candidates:
-                say("沒有新商品")
-                storage.finish_run(run_id, "ok", "沒有新商品", scanned)
+                say(tr("沒有新商品"))
+                storage.finish_run(run_id, "ok", tr("沒有新商品"), scanned)
                 return {"scanned": scanned, "analyzed": 0, "hits": 0}
 
             batch = candidates[: config.MAX_AI_PER_RUN]
-            say(f"新商品 {len(candidates)} 筆，本次處理 {len(batch)} 筆")
+            say(tr("新商品 {a} 筆，本次處理 {b} 筆").format(a=len(candidates), b=len(batch)))
             await asyncio.sleep(config.REQUEST_DELAY_SECONDS)
             market = await get_market(client, task)
             if market:
-                say(f"近期成交行情：中位數 ¥{market['median']:,}（樣本 {market['sample_size']}）")
+                say(tr("近期成交行情：中位數 ¥{m:,}（樣本 {n}）").format(m=market["median"], n=market["sample_size"]))
 
             use_ai = task.get("ai_enabled", True) and config.AI_ENABLED
             if task.get("ai_enabled", True) and not config.AI_ENABLED:
-                say("⚠ 未設定 OPENAI_API_KEY，改用規則模式（只比價格）")
+                say(tr("⚠ 未設定 OPENAI_API_KEY，改用規則模式（只比價格）"))
 
             for it in batch:
                 await asyncio.sleep(config.REQUEST_DELAY_SECONDS)
                 try:
                     await yahoo.fetch_detail(client, it)
                 except yahoo.YahooError as e:
-                    say(f"商品頁讀取失敗 {it.id}：{e}")
+                    say(tr("商品頁讀取失敗 {id}：{e}").format(id=it.id, e=e))
                     storage.mark_seen(name, it.id)
                     continue
                 item = it.to_dict()
                 try:
                     analysis = await ai.analyze(item, task, market, client) if use_ai else ai.rule_based(item, task, market)
                 except Exception as e:
-                    say(f"AI 分析失敗 {it.id}：{e}（下次再試）")
+                    say(tr("AI 分析失敗 {id}：{e}（下次再試）").format(id=it.id, e=e))
                     continue
                 analyzed += 1
                 storage.save_result(name, item, analysis, market)
                 storage.mark_seen(name, it.id)
                 ok = analysis.get("is_recommended") and int(analysis.get("score") or 0) >= int(task["notify_min_score"] if use_ai else 0)
                 tag = "✅" if ok else "  "
-                say(f"{tag} {analysis.get('score', 0):>3} 分 ¥{it.price:,} {it.title[:40]}")
+                say(f"{tag} {analysis.get('score', 0):>3} " + tr("分") + f" ¥{it.price:,} {it.title[:40]}")
                 if ok:
                     hits += 1
                     await notify.send(task, item, analysis, market)
                     storage.mark_notified(name, it.id)
 
-        msg = f"掃描 {scanned}、分析 {analyzed}、推薦 {hits}"
+        msg = tr("掃描 {a}、分析 {b}、推薦 {c}").format(a=scanned, b=analyzed, c=hits)
         if len(candidates) > len(batch):
-            msg += f"（還有 {len(candidates) - len(batch)} 筆留到下次）"
+            msg += tr("（還有 {n} 筆留到下次）").format(n=len(candidates) - len(batch))
         storage.finish_run(run_id, "ok", msg, scanned, analyzed, hits)
-        say("完成：" + msg)
+        say(tr("完成：") + msg)
         return {"scanned": scanned, "analyzed": analyzed, "hits": hits}
     except Exception as e:
         log.exception("[%s] 任務失敗", name)

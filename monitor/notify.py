@@ -9,6 +9,7 @@ from urllib.parse import quote
 import httpx
 
 from . import config
+from .i18n import tr
 
 log = logging.getLogger(__name__)
 
@@ -31,22 +32,22 @@ def channels() -> list[str]:
 def build_message(task: dict, item: dict, analysis: dict, market: dict | None) -> tuple[str, str]:
     level = analysis.get("deal_level") or ""
     title = f"🎯 {level}｜{task['name']}｜{config.fmt_jpy(item['price'])}"
-    kind = "フリマ" if item.get("is_fleamarket") else ("定額" if item.get("is_fixed_price") else f"拍賣・{item.get('bid_count', 0)} 人出價")
+    kind = "フリマ" if item.get("is_fleamarket") else (tr("定額") if item.get("is_fixed_price") else tr("拍賣・{n} 人出價").format(n=item.get("bid_count", 0)))
     lines = [
         analysis.get("title_zh") or item["title"],
-        f"價格：{config.fmt_jpy(item['price'])}（{kind}）",
+        tr("價格：{p}（{k}）").format(p=config.fmt_jpy(item["price"]), k=kind),
     ]
     if market and market.get("median"):
-        lines.append(f"近期成交中位數：{config.fmt_jpy(market['median'])}（現價為 {item['price'] / market['median'] * 100:.0f}%）")
+        lines.append(tr("近期成交中位數：{m}（現價為 {r:.0f}%）").format(m=config.fmt_jpy(market["median"]), r=item["price"] / market["median"] * 100))
     if analysis.get("estimated_final_price_jpy"):
-        lines.append(f"AI 預估成交：{config.fmt_jpy(analysis['estimated_final_price_jpy'])}")
-    lines.append(f"成色：{item.get('condition_name') or '-'}")
+        lines.append(tr("AI 預估成交：") + config.fmt_jpy(analysis["estimated_final_price_jpy"]))
+    lines.append(tr("成色：") + (item.get("condition_name") or "-"))
     if item.get("end_time") and not item.get("is_fleamarket"):
-        lines.append(f"結束：{item['end_time'].replace('T', ' ')[:16]}（日本時間）")
-    lines.append(f"AI 評分：{analysis.get('score', '-')}")
-    lines.append(f"理由：{analysis.get('reason', '')}")
+        lines.append(tr("結束：{t}（日本時間）").format(t=item["end_time"].replace("T", " ")[:16]))
+    lines.append(tr("AI 評分：") + str(analysis.get("score", "-")))
+    lines.append(tr("理由：") + str(analysis.get("reason", "")))
     if analysis.get("risk_tags"):
-        lines.append("風險：" + "、".join(analysis["risk_tags"]))
+        lines.append(tr("風險：") + "、".join(analysis["risk_tags"]))
     lines.append(item["url"])
     return title, "\n".join(lines)
 
@@ -125,10 +126,10 @@ async def send(task: dict, item: dict, analysis: dict, market: dict | None) -> l
     title, body = build_message(task, item, analysis, market)
     res = await _send_all(title, body, item, analysis)
     if not res:
-        log.info("（沒有設定通知管道，僅記錄）%s\n%s", title, body)
+        log.info(tr("（沒有設定通知管道，僅記錄）") + "%s\n%s", title, body)
     return [ch for ch, err in res.items() if err is None]
 
 
 async def send_test() -> dict[str, str | None]:
-    item = {"id": "test", "title": "測試通知", "price": 12345, "url": "https://auctions.yahoo.co.jp/", "image": "", "images": []}
-    return await _send_all(f"🔔 {config.APP_TITLE} 測試通知", "如果你看到這則訊息，代表通知設定成功。", item, {})
+    item = {"id": "test", "title": tr("測試通知"), "price": 12345, "url": "https://auctions.yahoo.co.jp/", "image": "", "images": []}
+    return await _send_all(f"🔔 {tr(config.APP_TITLE)} " + tr("測試通知"), tr("如果你看到這則訊息，代表通知設定成功。"), item, {})

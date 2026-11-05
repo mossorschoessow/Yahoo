@@ -40,20 +40,45 @@ LOG_DIR = HOME_DIR / "logs"
 for _d in (HOME_DIR, PROMPTS_DIR, DATA_DIR, LOG_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
-# 第一次執行：把預設檔案複製到使用者資料夾
-for _src, _dst in (
-    (RESOURCE_DIR / "prompts" / "base_prompt.txt", PROMPTS_DIR / "base_prompt.txt"),
-    (RESOURCE_DIR / "tasks.example.json", TASKS_FILE),
-):
-    if _src.exists() and not _dst.exists() and _src.resolve() != _dst.resolve():
-        if _dst == TASKS_FILE:
-            # 範例任務先停用，等使用者設定好再自己打開
-            _tasks = json.loads(_src.read_text(encoding="utf-8"))
-            for _t in _tasks:
-                _t["enabled"] = False
-            _dst.write_text(json.dumps(_tasks, ensure_ascii=False, indent=2), encoding="utf-8")
-        else:
-            shutil.copyfile(_src, _dst)
+PROMPT_FILES = {"zh-TW": "base_prompt.txt", "zh-CN": "base_prompt.zh-CN.txt"}
+
+
+def _first_run_files() -> None:
+    """第一次執行：把預設檔案複製到使用者資料夾。"""
+    for name in PROMPT_FILES.values():
+        src, dst = RESOURCE_DIR / "prompts" / name, PROMPTS_DIR / name
+        if src.exists() and not dst.exists() and src.resolve() != dst.resolve():
+            shutil.copyfile(src, dst)
+    src = RESOURCE_DIR / "tasks.example.json"
+    if src.exists() and not TASKS_FILE.exists() and src.resolve() != TASKS_FILE.resolve():
+        tasks = json.loads(src.read_text(encoding="utf-8"))
+        from .i18n import tr
+        for t in tasks:
+            t["enabled"] = False  # 範例任務先停用，等使用者設定好再自己打開
+            for k in ("name", "description"):
+                if t.get(k):
+                    t[k] = tr(t[k])
+        TASKS_FILE.write_text(json.dumps(tasks, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def prompt_file() -> Path:
+    """目前語言的 AI 提示詞檔案。"""
+    return PROMPTS_DIR / PROMPT_FILES.get(LANG, PROMPT_FILES["zh-TW"])
+
+
+def detect_system_lang() -> str:
+    """跟隨系統語言：簡體中文環境用 zh-CN，其他用 zh-TW。"""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            lcid = ctypes.windll.kernel32.GetUserDefaultUILanguage()
+            # 0x0804 中國、0x1004 新加坡、0x7804 / 0x0004 簡體中文
+            return "zh-CN" if lcid in (0x0804, 0x1004, 0x0004, 0x7804) else "zh-TW"
+        except Exception:
+            return "zh-TW"
+    env = (os.getenv("LC_ALL") or os.getenv("LANG") or "").lower()
+    return "zh-CN" if env.startswith(("zh_cn", "zh-cn", "zh_sg", "zh_hans")) else "zh-TW"
+
 
 # 啟動前就存在的環境變數優先於 .env（方便測試 / Docker）
 _PROCESS_ENV = {k: v for k, v in os.environ.items()}
@@ -75,6 +100,9 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
     {"key": "BARK_URL", "default": "", "type": "secret", "group": "通知", "label": "Bark 網址（iOS）"},
     {"key": "WEBHOOK_URL", "default": "", "type": "str", "group": "通知", "label": "通用 Webhook"},
     {"key": "TELEGRAM_API_BASE_URL", "default": "https://api.telegram.org", "type": "str", "group": "通知", "label": "Telegram API 位址"},
+    {"key": "UI_LANGUAGE", "default": "auto", "type": "choice", "choices": ["auto", "zh-TW", "zh-CN"],
+     "choice_labels": ["跟隨系統 / 跟随系统", "繁體中文", "简体中文"], "group": "顯示", "label": "介面語言",
+     "help": "通知與 AI 回覆也會使用這個語言"},
     {"key": "LOCAL_CURRENCY", "default": "TWD", "type": "str", "group": "顯示", "label": "換算幣別"},
     {"key": "JPY_TO_LOCAL_RATE", "default": "0", "type": "float", "group": "顯示", "label": "日圓匯率", "help": "1 日圓 = ? 換算幣別；0 不顯示"},
     {"key": "REQUEST_DELAY_SECONDS", "default": "3", "type": "float", "group": "爬取", "label": "請求間隔（秒）", "help": "不要調太小，避免被擋"},
@@ -155,11 +183,22 @@ def reload() -> None:
     )
     key = g["OPENAI_API_KEY"]
     g["AI_ENABLED"] = bool(key) and not key.startswith("sk-...")
+    ui = v.get("UI_LANGUAGE") or "auto"
+    g["UI_LANGUAGE"] = ui
+    g["LANG"] = ui if ui in ("zh-TW", "zh-CN") else detect_system_lang()
 
 
 def get_settings() -> list[dict[str, Any]]:
     v = _raw_values()
-    return [{**s, "value": v.get(s["key"], s["default"]), "locked": s["key"] in _PROCESS_ENV} for s in SETTINGS_SCHEMA]
+    from .i18n import tr
+    out = []
+    for s in SETTINGS_SCHEMA:
+        item = {**s, "value": v.get(s["key"], s["default"]), "locked": s["key"] in _PROCESS_ENV}
+        for k in ("group", "label", "help"):
+            if item.get(k):
+                item[k] = tr(item[k])
+        out.append(item)
+    return out
 
 
 def save_settings(new: dict[str, Any]) -> None:
@@ -176,11 +215,11 @@ def save_settings(new: dict[str, Any]) -> None:
             try:
                 float(val)
             except ValueError:
-                raise ValueError(f"「{s['label']}」必須是數字")
+                raise ValueError(_tr("「{label}」必須是數字").format(label=_tr(s["label"])))
         elif s["type"] == "choice" and val not in s["choices"]:
-            raise ValueError(f"「{s['label']}」的值不正確")
+            raise ValueError(_tr("「{label}」的值不正確").format(label=_tr(s["label"])))
         if "\n" in val:
-            raise ValueError(f"「{s['label']}」不能換行")
+            raise ValueError(_tr("「{label}」不能換行").format(label=_tr(s["label"])))
         current[k] = val
 
     lines = ["# 由「日拍撿漏監控」設定頁產生，也可以手動編輯", ""]
@@ -195,6 +234,11 @@ def save_settings(new: dict[str, Any]) -> None:
         lines += ["", "# ---- 其他 ----"] + [f"{k}={_quote(current[k])}" for k in extras]
     ENV_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
     reload()
+
+
+def _tr(text: str) -> str:
+    from .i18n import tr
+    return tr(text)
 
 
 def _quote(v: str) -> str:
@@ -243,5 +287,8 @@ DISCORD_WEBHOOK_URL: str
 BARK_URL: str
 WEBHOOK_URL: str
 DB_FILE: Path
+UI_LANGUAGE: str
+LANG: str  # 實際使用的語言：zh-TW 或 zh-CN
 
 reload()
+_first_run_files()
