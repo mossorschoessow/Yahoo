@@ -1,88 +1,207 @@
-"""讀取 .env 設定。"""
+"""設定：讀取 .env，並提供給設定頁修改 / 重新載入。
+
+路徑規則：
+- 程式資源（static、預設 prompt）：打包後在 PyInstaller 解壓目錄，原始碼執行時在專案目錄
+- 使用者資料（.env、tasks.json、prompts、data、logs）：
+    打包後放在 %LOCALAPPDATA%\\YahooAuctionMonitor；原始碼執行時放在專案目錄
+    也可以用環境變數 YAM_HOME 指定
+"""
 from __future__ import annotations
 
+import json
 import os
+import shutil
+import sys
 from pathlib import Path
+from typing import Any
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env")
+APP_NAME = "YahooAuctionMonitor"
+APP_TITLE = "日拍撿漏監控"
+FROZEN = bool(getattr(sys, "frozen", False))
 
+RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+if os.getenv("YAM_HOME"):
+    HOME_DIR = Path(os.environ["YAM_HOME"])
+elif FROZEN:
+    HOME_DIR = Path(os.getenv("LOCALAPPDATA") or Path.home()) / APP_NAME
+else:
+    HOME_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = HOME_DIR  # 舊名稱相容
 
-def _bool(name: str, default: bool) -> bool:
-    v = os.getenv(name)
-    if v is None or v.strip() == "":
-        return default
-    return v.strip().lower() in ("1", "true", "yes", "on")
+STATIC_DIR = RESOURCE_DIR / "static"
+ENV_FILE = HOME_DIR / ".env"
+TASKS_FILE = HOME_DIR / "tasks.json"
+PROMPTS_DIR = HOME_DIR / "prompts"
+DATA_DIR = HOME_DIR / "data"
+LOG_DIR = HOME_DIR / "logs"
 
-
-def _int(name: str, default: int) -> int:
-    try:
-        return int(os.getenv(name, "").strip() or default)
-    except ValueError:
-        return default
-
-
-def _float(name: str, default: float) -> float:
-    try:
-        return float(os.getenv(name, "").strip() or default)
-    except ValueError:
-        return default
-
-
-def _str(name: str, default: str = "") -> str:
-    return (os.getenv(name) or default).strip().strip('"').strip("'")
-
-
-# --- AI ---
-OPENAI_API_KEY = _str("OPENAI_API_KEY")
-OPENAI_BASE_URL = _str("OPENAI_BASE_URL", "https://api.openai.com/v1/")
-OPENAI_MODEL_NAME = _str("OPENAI_MODEL_NAME", "gpt-4o-mini")
-AI_IMAGE_MODE = _str("AI_IMAGE_MODE", "base64").lower()  # base64 | url | none
-AI_MAX_IMAGES = _int("AI_MAX_IMAGES", 4)
-AI_RESPONSE_FORMAT_JSON = _bool("AI_RESPONSE_FORMAT_JSON", True)
-AI_TIMEOUT_SECONDS = _int("AI_TIMEOUT_SECONDS", 120)
-AI_DEBUG = _bool("AI_DEBUG", False)
-AI_PROXY_URL = _str("AI_PROXY_URL")
-
-AI_ENABLED = bool(OPENAI_API_KEY) and not OPENAI_API_KEY.startswith("sk-...")
-
-# --- 爬取 ---
-REQUEST_DELAY_SECONDS = _float("REQUEST_DELAY_SECONDS", 3.0)
-SCRAPE_PROXY_URL = _str("SCRAPE_PROXY_URL")
-MIN_INTERVAL_MINUTES = _int("MIN_INTERVAL_MINUTES", 5)
-MAX_AI_PER_RUN = _int("MAX_AI_PER_RUN", 20)
-MARKET_CACHE_HOURS = _int("MARKET_CACHE_HOURS", 6)
-
-# --- 匯率顯示（可選） ---
-LOCAL_CURRENCY = _str("LOCAL_CURRENCY", "TWD")
-JPY_TO_LOCAL_RATE = _float("JPY_TO_LOCAL_RATE", 0.0)  # 例如 0.21；0 表示不顯示
-
-# --- Web ---
-SERVER_HOST = _str("SERVER_HOST", "127.0.0.1")
-SERVER_PORT = _int("SERVER_PORT", 8000)
-WEB_USERNAME = _str("WEB_USERNAME", "admin")
-WEB_PASSWORD = _str("WEB_PASSWORD")
-
-# --- 通知 ---
-NTFY_TOPIC_URL = _str("NTFY_TOPIC_URL")
-TELEGRAM_BOT_TOKEN = _str("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = _str("TELEGRAM_CHAT_ID")
-TELEGRAM_API_BASE_URL = _str("TELEGRAM_API_BASE_URL", "https://api.telegram.org")
-DISCORD_WEBHOOK_URL = _str("DISCORD_WEBHOOK_URL")
-BARK_URL = _str("BARK_URL")
-WEBHOOK_URL = _str("WEBHOOK_URL")
-
-# --- 路徑 ---
-DATA_DIR = BASE_DIR / "data"
-DB_FILE = Path(_str("DB_FILE") or (DATA_DIR / "app.sqlite3"))
-TASKS_FILE = BASE_DIR / "tasks.json"
-PROMPTS_DIR = BASE_DIR / "prompts"
-LOG_DIR = BASE_DIR / "logs"
-
-for _d in (DATA_DIR, LOG_DIR):
+for _d in (HOME_DIR, PROMPTS_DIR, DATA_DIR, LOG_DIR):
     _d.mkdir(parents=True, exist_ok=True)
+
+# 第一次執行：把預設檔案複製到使用者資料夾
+for _src, _dst in (
+    (RESOURCE_DIR / "prompts" / "base_prompt.txt", PROMPTS_DIR / "base_prompt.txt"),
+    (RESOURCE_DIR / "tasks.example.json", TASKS_FILE),
+):
+    if _src.exists() and not _dst.exists() and _src.resolve() != _dst.resolve():
+        if _dst == TASKS_FILE:
+            # 範例任務先停用，等使用者設定好再自己打開
+            _tasks = json.loads(_src.read_text(encoding="utf-8"))
+            for _t in _tasks:
+                _t["enabled"] = False
+            _dst.write_text(json.dumps(_tasks, ensure_ascii=False, indent=2), encoding="utf-8")
+        else:
+            shutil.copyfile(_src, _dst)
+
+# 啟動前就存在的環境變數優先於 .env（方便測試 / Docker）
+_PROCESS_ENV = {k: v for k, v in os.environ.items()}
+
+# --------------------------------------------------------------------------- 設定欄位定義
+# (key, 預設值, 型別, 分組, 標籤, 說明)
+SETTINGS_SCHEMA: list[dict[str, Any]] = [
+    {"key": "OPENAI_API_KEY", "default": "", "type": "secret", "group": "AI 模型", "label": "API Key", "help": "沒填就用規則模式（只比價格）"},
+    {"key": "OPENAI_BASE_URL", "default": "https://api.openai.com/v1/", "type": "str", "group": "AI 模型", "label": "API 位址", "help": "任何 OpenAI 相容服務"},
+    {"key": "OPENAI_MODEL_NAME", "default": "gpt-4o-mini", "type": "str", "group": "AI 模型", "label": "模型名稱", "help": "必須支援圖片輸入"},
+    {"key": "AI_IMAGE_MODE", "default": "base64", "type": "choice", "choices": ["base64", "url", "none"], "group": "AI 模型", "label": "圖片傳送方式", "help": "base64 最相容；url 省流量；none 不傳圖"},
+    {"key": "AI_MAX_IMAGES", "default": "4", "type": "int", "group": "AI 模型", "label": "每件商品最多幾張圖"},
+    {"key": "AI_RESPONSE_FORMAT_JSON", "default": "true", "type": "bool", "group": "AI 模型", "label": "使用 JSON 回覆格式", "help": "模型不支援時會自動關閉"},
+    {"key": "AI_PROXY_URL", "default": "", "type": "str", "group": "AI 模型", "label": "AI 代理", "help": "例：http://127.0.0.1:7890"},
+    {"key": "TELEGRAM_BOT_TOKEN", "default": "", "type": "secret", "group": "通知", "label": "Telegram Bot Token", "help": "找 @BotFather 建立"},
+    {"key": "TELEGRAM_CHAT_ID", "default": "", "type": "str", "group": "通知", "label": "Telegram Chat ID", "help": "找 @userinfobot 查詢"},
+    {"key": "DISCORD_WEBHOOK_URL", "default": "", "type": "secret", "group": "通知", "label": "Discord Webhook"},
+    {"key": "NTFY_TOPIC_URL", "default": "", "type": "str", "group": "通知", "label": "ntfy 主題網址", "help": "例：https://ntfy.sh/my-topic-xxxx"},
+    {"key": "BARK_URL", "default": "", "type": "secret", "group": "通知", "label": "Bark 網址（iOS）"},
+    {"key": "WEBHOOK_URL", "default": "", "type": "str", "group": "通知", "label": "通用 Webhook"},
+    {"key": "TELEGRAM_API_BASE_URL", "default": "https://api.telegram.org", "type": "str", "group": "通知", "label": "Telegram API 位址"},
+    {"key": "LOCAL_CURRENCY", "default": "TWD", "type": "str", "group": "顯示", "label": "換算幣別"},
+    {"key": "JPY_TO_LOCAL_RATE", "default": "0", "type": "float", "group": "顯示", "label": "日圓匯率", "help": "1 日圓 = ? 換算幣別；0 不顯示"},
+    {"key": "REQUEST_DELAY_SECONDS", "default": "3", "type": "float", "group": "爬取", "label": "請求間隔（秒）", "help": "不要調太小，避免被擋"},
+    {"key": "MIN_INTERVAL_MINUTES", "default": "5", "type": "int", "group": "爬取", "label": "任務最短間隔（分鐘）"},
+    {"key": "MAX_AI_PER_RUN", "default": "20", "type": "int", "group": "爬取", "label": "每次最多分析幾件", "help": "控制 AI 花費"},
+    {"key": "MARKET_CACHE_HOURS", "default": "6", "type": "int", "group": "爬取", "label": "行情快取（小時）"},
+    {"key": "SCRAPE_PROXY_URL", "default": "", "type": "str", "group": "爬取", "label": "日拍代理"},
+    {"key": "SERVER_HOST", "default": "127.0.0.1", "type": "str", "group": "Web", "label": "監聽位址", "help": "改成 0.0.0.0 可讓手機連線（務必設密碼），重開生效"},
+    {"key": "SERVER_PORT", "default": "8000", "type": "int", "group": "Web", "label": "連接埠", "help": "重開生效"},
+    {"key": "WEB_USERNAME", "default": "admin", "type": "str", "group": "Web", "label": "登入帳號"},
+    {"key": "WEB_PASSWORD", "default": "", "type": "secret", "group": "Web", "label": "登入密碼", "help": "留空 = 不需登入"},
+]
+_SCHEMA_BY_KEY = {s["key"]: s for s in SETTINGS_SCHEMA}
+_EXTRA_KEYS = ["AI_TIMEOUT_SECONDS", "AI_DEBUG", "DB_FILE"]
+
+
+def _raw_values() -> dict[str, str]:
+    file_vals = {k: (v or "") for k, v in dotenv_values(ENV_FILE).items()} if ENV_FILE.exists() else {}
+    vals = {s["key"]: s["default"] for s in SETTINGS_SCHEMA}
+    vals.update(file_vals)
+    for k in list(vals) + _EXTRA_KEYS:
+        if k in _PROCESS_ENV:
+            vals[k] = _PROCESS_ENV[k]
+    return {k: str(v).strip().strip('"').strip("'") for k, v in vals.items()}
+
+
+def _b(v: str, d: bool) -> bool:
+    return d if v == "" else v.lower() in ("1", "true", "yes", "on")
+
+
+def _i(v: str, d: int) -> int:
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return d
+
+
+def _f(v: str, d: float) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return d
+
+
+def reload() -> None:
+    """重新讀取 .env 並更新本模組的設定值。"""
+    v = _raw_values()
+    g = globals()
+    g.update(
+        OPENAI_API_KEY=v.get("OPENAI_API_KEY", ""),
+        OPENAI_BASE_URL=v.get("OPENAI_BASE_URL") or "https://api.openai.com/v1/",
+        OPENAI_MODEL_NAME=v.get("OPENAI_MODEL_NAME") or "gpt-4o-mini",
+        AI_IMAGE_MODE=(v.get("AI_IMAGE_MODE") or "base64").lower(),
+        AI_MAX_IMAGES=_i(v.get("AI_MAX_IMAGES", ""), 4),
+        AI_RESPONSE_FORMAT_JSON=_b(v.get("AI_RESPONSE_FORMAT_JSON", ""), True),
+        AI_TIMEOUT_SECONDS=_i(v.get("AI_TIMEOUT_SECONDS", ""), 120),
+        AI_DEBUG=_b(v.get("AI_DEBUG", ""), False),
+        AI_PROXY_URL=v.get("AI_PROXY_URL", ""),
+        REQUEST_DELAY_SECONDS=_f(v.get("REQUEST_DELAY_SECONDS", ""), 3.0),
+        SCRAPE_PROXY_URL=v.get("SCRAPE_PROXY_URL", ""),
+        MIN_INTERVAL_MINUTES=_i(v.get("MIN_INTERVAL_MINUTES", ""), 5),
+        MAX_AI_PER_RUN=_i(v.get("MAX_AI_PER_RUN", ""), 20),
+        MARKET_CACHE_HOURS=_i(v.get("MARKET_CACHE_HOURS", ""), 6),
+        LOCAL_CURRENCY=v.get("LOCAL_CURRENCY") or "TWD",
+        JPY_TO_LOCAL_RATE=_f(v.get("JPY_TO_LOCAL_RATE", ""), 0.0),
+        SERVER_HOST=v.get("SERVER_HOST") or "127.0.0.1",
+        SERVER_PORT=_i(v.get("SERVER_PORT", ""), 8000),
+        WEB_USERNAME=v.get("WEB_USERNAME") or "admin",
+        WEB_PASSWORD=v.get("WEB_PASSWORD", ""),
+        NTFY_TOPIC_URL=v.get("NTFY_TOPIC_URL", ""),
+        TELEGRAM_BOT_TOKEN=v.get("TELEGRAM_BOT_TOKEN", ""),
+        TELEGRAM_CHAT_ID=v.get("TELEGRAM_CHAT_ID", ""),
+        TELEGRAM_API_BASE_URL=v.get("TELEGRAM_API_BASE_URL") or "https://api.telegram.org",
+        DISCORD_WEBHOOK_URL=v.get("DISCORD_WEBHOOK_URL", ""),
+        BARK_URL=v.get("BARK_URL", ""),
+        WEBHOOK_URL=v.get("WEBHOOK_URL", ""),
+        DB_FILE=Path(v.get("DB_FILE") or (DATA_DIR / "app.sqlite3")),
+    )
+    key = g["OPENAI_API_KEY"]
+    g["AI_ENABLED"] = bool(key) and not key.startswith("sk-...")
+
+
+def get_settings() -> list[dict[str, Any]]:
+    v = _raw_values()
+    return [{**s, "value": v.get(s["key"], s["default"]), "locked": s["key"] in _PROCESS_ENV} for s in SETTINGS_SCHEMA]
+
+
+def save_settings(new: dict[str, Any]) -> None:
+    """寫回 .env（只寫設定頁認得的欄位，其他既有欄位保留）。"""
+    current = {k: (v or "") for k, v in dotenv_values(ENV_FILE).items()} if ENV_FILE.exists() else {}
+    for k, val in new.items():
+        s = _SCHEMA_BY_KEY.get(k)
+        if not s:
+            continue
+        val = "" if val is None else str(val).strip()
+        if s["type"] == "bool":
+            val = "true" if val.lower() in ("1", "true", "yes", "on") else "false"
+        elif s["type"] in ("int", "float") and val:
+            try:
+                float(val)
+            except ValueError:
+                raise ValueError(f"「{s['label']}」必須是數字")
+        elif s["type"] == "choice" and val not in s["choices"]:
+            raise ValueError(f"「{s['label']}」的值不正確")
+        if "\n" in val:
+            raise ValueError(f"「{s['label']}」不能換行")
+        current[k] = val
+
+    lines = ["# 由「日拍撿漏監控」設定頁產生，也可以手動編輯", ""]
+    group = None
+    for s in SETTINGS_SCHEMA:
+        if s["group"] != group:
+            group = s["group"]
+            lines += ["", f"# ---- {group} ----"]
+        lines.append(f"{s['key']}={_quote(current.get(s['key'], s['default']))}")
+    extras = [k for k in current if k not in _SCHEMA_BY_KEY]
+    if extras:
+        lines += ["", "# ---- 其他 ----"] + [f"{k}={_quote(current[k])}" for k in extras]
+    ENV_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    reload()
+
+
+def _quote(v: str) -> str:
+    v = str(v)
+    if v == "" or all(c.isalnum() or c in "-_./:@?=&%+~,*" for c in v):
+        return v
+    return '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def fmt_jpy(v: int | float | None) -> str:
@@ -92,3 +211,37 @@ def fmt_jpy(v: int | float | None) -> str:
     if JPY_TO_LOCAL_RATE > 0:
         s += f"（約 {LOCAL_CURRENCY} {v * JPY_TO_LOCAL_RATE:,.0f}）"
     return s
+
+
+# 給型別檢查 / IDE 用的宣告，實際值由 reload() 填入
+OPENAI_API_KEY: str
+OPENAI_BASE_URL: str
+OPENAI_MODEL_NAME: str
+AI_IMAGE_MODE: str
+AI_MAX_IMAGES: int
+AI_RESPONSE_FORMAT_JSON: bool
+AI_TIMEOUT_SECONDS: int
+AI_DEBUG: bool
+AI_PROXY_URL: str
+AI_ENABLED: bool
+REQUEST_DELAY_SECONDS: float
+SCRAPE_PROXY_URL: str
+MIN_INTERVAL_MINUTES: int
+MAX_AI_PER_RUN: int
+MARKET_CACHE_HOURS: int
+LOCAL_CURRENCY: str
+JPY_TO_LOCAL_RATE: float
+SERVER_HOST: str
+SERVER_PORT: int
+WEB_USERNAME: str
+WEB_PASSWORD: str
+NTFY_TOPIC_URL: str
+TELEGRAM_BOT_TOKEN: str
+TELEGRAM_CHAT_ID: str
+TELEGRAM_API_BASE_URL: str
+DISCORD_WEBHOOK_URL: str
+BARK_URL: str
+WEBHOOK_URL: str
+DB_FILE: Path
+
+reload()

@@ -52,18 +52,19 @@ def build_message(task: dict, item: dict, analysis: dict, market: dict | None) -
 
 
 async def _ntfy(http: httpx.AsyncClient, title: str, body: str, item: dict) -> None:
-    await http.post(
+    r = await http.post(
         config.NTFY_TOPIC_URL,
         content=body.encode("utf-8"),
         headers={
             # HTTP header 只能放 latin-1，用 RFC 2047 編碼標題
             "Title": "=?UTF-8?B?" + base64.b64encode(title.encode()).decode() + "?=",
             "Click": item["url"],
-            "Attach": item.get("image") or "",
+            **({"Attach": item["image"]} if item.get("image") else {}),
             "Priority": "high",
             "Tags": "moneybag",
         },
     )
+    r.raise_for_status()
 
 
 async def _telegram(http: httpx.AsyncClient, title: str, body: str, item: dict) -> None:
@@ -97,9 +98,9 @@ async def _webhook(http: httpx.AsyncClient, title: str, body: str, item: dict, a
     r.raise_for_status()
 
 
-async def send(task: dict, item: dict, analysis: dict, market: dict | None) -> list[str]:
-    title, body = build_message(task, item, analysis, market)
-    sent = []
+async def _send_all(title: str, body: str, item: dict, analysis: dict) -> dict[str, str | None]:
+    """回傳 {管道: None（成功）或錯誤訊息}。"""
+    out: dict[str, str | None] = {}
     async with httpx.AsyncClient(timeout=20) as http:
         for ch in channels():
             try:
@@ -113,9 +114,21 @@ async def send(task: dict, item: dict, analysis: dict, market: dict | None) -> l
                     await _bark(http, title, body, item)
                 elif ch == "webhook":
                     await _webhook(http, title, body, item, analysis)
-                sent.append(ch)
+                out[ch] = None
             except Exception as e:
                 log.warning("%s 通知失敗：%s", ch, e)
-    if not sent:
+                out[ch] = str(e) or e.__class__.__name__
+    return out
+
+
+async def send(task: dict, item: dict, analysis: dict, market: dict | None) -> list[str]:
+    title, body = build_message(task, item, analysis, market)
+    res = await _send_all(title, body, item, analysis)
+    if not res:
         log.info("（沒有設定通知管道，僅記錄）%s\n%s", title, body)
-    return sent
+    return [ch for ch, err in res.items() if err is None]
+
+
+async def send_test() -> dict[str, str | None]:
+    item = {"id": "test", "title": "測試通知", "price": 12345, "url": "https://auctions.yahoo.co.jp/", "image": "", "images": []}
+    return await _send_all(f"🔔 {config.APP_TITLE} 測試通知", "如果你看到這則訊息，代表通知設定成功。", item, {})

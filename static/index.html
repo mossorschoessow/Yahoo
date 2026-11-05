@@ -60,6 +60,14 @@ dialog::backdrop { background: rgb(0 0 0 / .4); }
 .form label.full { grid-column: 1 / -1; }
 .form label.chk { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px; }
 .form .actions { grid-column: 1 / -1; display: flex; gap: 8px; justify-content: flex-end; }
+.banner { background: var(--warn-bg); color: var(--text); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-top: 14px; }
+.panel h2 { font-size: 15px; margin: 0 0 10px; }
+.sgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px 14px; }
+.sgrid label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.sgrid label .h { font-size: 11px; }
+.sgrid .pw { display: flex; gap: 4px; } .sgrid .pw input { flex: 1; min-width: 0; }
+code { background: var(--surface-2); padding: 0 4px; border-radius: 4px; }
 @media (max-width: 640px) { .form { grid-template-columns: 1fr; } #status { margin-left: 0; } }
 </style>
 </head>
@@ -70,12 +78,17 @@ dialog::backdrop { background: rgb(0 0 0 / .4); }
     <button data-tab="results" class="on">結果</button>
     <button data-tab="tasks">任務</button>
     <button data-tab="logs">日誌</button>
+    <button data-tab="settings">設定</button>
   </nav>
   <div id="status"></div>
 </div></header>
 
 <main>
   <section id="tab-results">
+    <div class="banner" id="first-run" hidden>
+      <b>歡迎使用！</b> 先到「設定」填 AI 的 API Key 和至少一種通知方式（例如 Telegram），再到「任務」設定你想找的商品。
+      <button class="btn primary" onclick="goTab('settings')">前往設定</button>
+    </div>
     <div class="toolbar">
       <select id="f-task"><option value="">全部任務</option></select>
       <label><input type="checkbox" id="f-rec" checked> 只看推薦</label>
@@ -98,6 +111,23 @@ dialog::backdrop { background: rgb(0 0 0 / .4); }
       <thead><tr><th>任務</th><th>開始</th><th>狀態</th><th>結果</th></tr></thead>
       <tbody id="runs"></tbody>
     </table></div>
+  </section>
+
+  <section id="tab-settings" hidden>
+    <div id="settings"></div>
+    <div class="toolbar" style="margin-top:14px">
+      <button class="btn primary" id="save-settings">儲存設定</button>
+      <button class="btn" id="test-ai">測試 AI 連線</button>
+      <button class="btn" id="test-notify">發送測試通知</button>
+    </div>
+    <pre class="log" id="settings-msg" hidden></pre>
+    <div class="panel">
+      <h2>AI 提示詞</h2>
+      <p class="sub">AI 判斷商品時使用的規則。<code>{{CRITERIA}}</code> 會換成每個任務的「我的需求」，請保留。</p>
+      <textarea id="prompt" style="min-height:260px;font-family:ui-monospace,Consolas,monospace;font-size:12px"></textarea>
+      <div class="toolbar" style="margin-top:8px"><button class="btn" id="save-prompt">儲存提示詞</button></div>
+    </div>
+    <p class="sub" id="home-dir"></p>
   </section>
 </main>
 
@@ -146,11 +176,49 @@ const ago = (ts) => { if (!ts) return "-"; const s = Date.now() / 1000 - ts;
   return s < 60 ? "剛剛" : s < 3600 ? `${Math.floor(s / 60)} 分鐘前` : s < 86400 ? `${Math.floor(s / 3600)} 小時前` : new Date(ts * 1000).toLocaleString(); };
 const until = (ts) => { if (!ts) return "-"; const s = ts - Date.now() / 1000; return s <= 0 ? "即將" : `${Math.ceil(s / 60)} 分鐘後`; };
 
-document.querySelectorAll("nav button").forEach((b) => b.onclick = () => {
-  document.querySelectorAll("nav button").forEach((x) => x.classList.toggle("on", x === b));
-  document.querySelectorAll("main > section").forEach((s) => s.hidden = s.id !== "tab-" + b.dataset.tab);
+window.goTab = (name) => {
+  document.querySelectorAll("nav button").forEach((x) => x.classList.toggle("on", x.dataset.tab === name));
+  document.querySelectorAll("main > section").forEach((s) => s.hidden = s.id !== "tab-" + name);
+  if (name === "settings") loadSettings();
   refresh();
-});
+};
+document.querySelectorAll("nav button").forEach((b) => b.onclick = () => goTab(b.dataset.tab));
+
+// ---------------------------------------------------------------- 設定
+let SETTINGS = [];
+async function loadSettings() {
+  SETTINGS = await api("/api/settings");
+  const groups = {};
+  SETTINGS.forEach((s) => (groups[s.group] ||= []).push(s));
+  $("#settings").innerHTML = Object.entries(groups).map(([g, items]) => `<div class="panel"><h2>${esc(g)}</h2><div class="sgrid">` +
+    items.map((s) => {
+      const id = "s-" + s.key, dis = s.locked ? "disabled title='由環境變數設定'" : "";
+      let input;
+      if (s.type === "bool") input = `<select id="${id}" ${dis}><option value="true" ${s.value === "true" ? "selected" : ""}>開啟</option><option value="false" ${s.value !== "true" ? "selected" : ""}>關閉</option></select>`;
+      else if (s.type === "choice") input = `<select id="${id}" ${dis}>${s.choices.map((c) => `<option ${c === s.value ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>`;
+      else if (s.type === "secret") input = `<span class="pw"><input id="${id}" type="password" autocomplete="off" value="${esc(s.value)}" ${dis}><button class="btn" type="button" onclick="const i=this.previousElementSibling;i.type=i.type==='password'?'text':'password'">👁</button></span>`;
+      else input = `<input id="${id}" ${s.type === "int" || s.type === "float" ? 'inputmode="decimal"' : ""} value="${esc(s.value)}" placeholder="${esc(s.default)}" ${dis}>`;
+      return `<label>${esc(s.label)}${input}${s.help ? `<span class="h">${esc(s.help)}</span>` : ""}</label>`;
+    }).join("") + `</div></div>`).join("");
+  $("#prompt").value = (await api("/api/prompt")).text;
+  $("#home-dir").textContent = "資料夾：" + (STATUS.home_dir || "");
+}
+function showMsg(text, ok) { const el = $("#settings-msg"); el.hidden = false; el.textContent = text; el.style.borderColor = ok ? "var(--good)" : "var(--bad)"; }
+async function saveSettings() {
+  const vals = {};
+  SETTINGS.filter((s) => !s.locked).forEach((s) => vals[s.key] = $("#s-" + s.key).value);
+  await api("/api/settings", { method: "PUT", body: JSON.stringify(vals) });
+  await loadStatus();
+}
+$("#save-settings").onclick = async () => { await saveSettings(); showMsg("✅ 已儲存", true); };
+for (const [btn, path] of [["#test-ai", "/api/settings/test-ai"], ["#test-notify", "/api/settings/test-notify"]]) {
+  $(btn).onclick = async (e) => {
+    e.target.disabled = true; showMsg("測試中…", true);
+    try { await saveSettings(); const r = await api(path, { method: "POST" }); showMsg(r.message, r.ok); }
+    finally { e.target.disabled = false; }
+  };
+}
+$("#save-prompt").onclick = async () => { await api("/api/prompt", { method: "PUT", body: JSON.stringify({ text: $("#prompt").value }) }); showMsg("✅ 提示詞已儲存", true); };
 
 async function loadStatus() {
   STATUS = await api("/api/status");
@@ -158,6 +226,7 @@ async function loadStatus() {
   const n = STATUS.notify_channels.length ? `<span class="pill good">通知：${STATUS.notify_channels.join("、")}</span>` : `<span class="pill warn">未設定通知</span>`;
   const run = STATUS.running ? `<span class="pill">執行中：${esc(STATUS.running)}</span>` : "";
   $("#status").innerHTML = ai + n + run;
+  $("#first-run").hidden = !STATUS.first_run;
 }
 
 async function loadResults() {
