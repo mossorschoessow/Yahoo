@@ -107,6 +107,7 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
     {"key": "JPY_TO_LOCAL_RATE", "default": "0", "type": "float", "group": "顯示", "label": "日圓匯率", "help": "1 日圓 = ? 換算幣別；0 不顯示"},
     {"key": "REQUEST_DELAY_SECONDS", "default": "3", "type": "float", "group": "爬取", "label": "請求間隔（秒）", "help": "不要調太小，避免被擋"},
     {"key": "MIN_INTERVAL_MINUTES", "default": "5", "type": "int", "group": "爬取", "label": "任務最短間隔（分鐘）"},
+    {"key": "MAX_CONCURRENT_TASKS", "default": "3", "type": "int", "group": "爬取", "label": "同時執行任務數", "help": "勾選的任務最多幾個一起跑，其餘排隊；太多容易被日拍擋"},
     {"key": "MAX_AI_PER_RUN", "default": "20", "type": "int", "group": "爬取", "label": "每次最多分析幾件", "help": "控制 AI 花費"},
     {"key": "MARKET_CACHE_HOURS", "default": "6", "type": "int", "group": "爬取", "label": "行情快取（小時）"},
     {"key": "SCRAPE_PROXY_URL", "default": "", "type": "str", "group": "爬取", "label": "日拍代理"},
@@ -165,6 +166,7 @@ def reload() -> None:
         SCRAPE_PROXY_URL=v.get("SCRAPE_PROXY_URL", ""),
         MIN_INTERVAL_MINUTES=_i(v.get("MIN_INTERVAL_MINUTES", ""), 5),
         MAX_AI_PER_RUN=_i(v.get("MAX_AI_PER_RUN", ""), 20),
+        MAX_CONCURRENT_TASKS=max(1, _i(v.get("MAX_CONCURRENT_TASKS", ""), 3)),
         MARKET_CACHE_HOURS=_i(v.get("MARKET_CACHE_HOURS", ""), 6),
         LOCAL_CURRENCY=v.get("LOCAL_CURRENCY") or "TWD",
         JPY_TO_LOCAL_RATE=_f(v.get("JPY_TO_LOCAL_RATE", ""), 0.0),
@@ -272,6 +274,7 @@ REQUEST_DELAY_SECONDS: float
 SCRAPE_PROXY_URL: str
 MIN_INTERVAL_MINUTES: int
 MAX_AI_PER_RUN: int
+MAX_CONCURRENT_TASKS: int
 MARKET_CACHE_HOURS: int
 LOCAL_CURRENCY: str
 JPY_TO_LOCAL_RATE: float
