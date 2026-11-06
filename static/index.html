@@ -171,6 +171,11 @@ async function api(path, opt = {}) {
   if (!r.ok) { const t = await r.text(); alert("錯誤：" + t); throw new Error(t); }
   return r.json();
 }
+// 只有內容真的變了才重畫：定時刷新時不會把開著的下拉選單、正在點的按鈕換掉
+const _drawn = new Map();
+function setHTML(el, html) { if (_drawn.get(el) === html) return; _drawn.set(el, html); el.innerHTML = html; }
+const isRunning = (n) => (STATUS.running || []).includes(n);
+const isQueued = (n) => (STATUS.queue || []).includes(n);
 const yen = (v) => v == null ? "-" : "¥" + Number(v).toLocaleString();
 const local = (v) => STATUS.jpy_rate > 0 && v ? `≈ ${STATUS.local_currency} ${Math.round(v * STATUS.jpy_rate).toLocaleString()}` : "";
 const ago = (ts) => { if (!ts) return "-"; const s = Date.now() / 1000 - ts;
@@ -225,16 +230,23 @@ async function loadStatus() {
   STATUS = await api("/api/status");
   const ai = STATUS.ai_enabled ? `<span class="pill good">AI：${esc(STATUS.model)}</span>` : `<span class="pill warn">AI 未設定（規則模式）</span>`;
   const n = STATUS.notify_channels.length ? `<span class="pill good">通知：${STATUS.notify_channels.join("、")}</span>` : `<span class="pill warn">未設定通知</span>`;
-  const run = STATUS.running ? `<span class="pill">執行中：${esc(STATUS.running)}</span>` : "";
-  $("#status").innerHTML = ai + n + run;
+  const run = (STATUS.running || []).length ? `<span class="pill good">執行中：${STATUS.running.map(esc).join("、")}</span>` : "";
+  const q = (STATUS.queue || []).length ? `<span class="pill">排隊中：${STATUS.queue.map(esc).join("、")}</span>` : "";
+  setHTML($("#status"), ai + n + run + q);
   $("#first-run").hidden = !STATUS.first_run;
 }
 
+let resultsSeq = 0;
 async function loadResults() {
-  const task = $("#f-task").value, rec = $("#f-rec").checked;
+  const task = $("#f-task").value, rec = $("#f-rec").checked, seq = ++resultsSeq;
   const rows = await api(`/api/results?limit=120&recommended=${rec}` + (task ? `&task=${encodeURIComponent(task)}` : ""));
-  if (!rows.length) { $("#results").innerHTML = `<div class="empty">還沒有${rec ? "推薦的" : ""}結果。任務跑過之後會出現在這裡。</div>`; return; }
-  $("#results").innerHTML = rows.map((r) => {
+  if (seq !== resultsSeq) return;  // 已經切到別的任務，丟掉晚到的舊回應
+  if (!rows.length) {
+    const who = task ? `「${esc(task)}」` : "";
+    const tip = rec ? "可以取消勾選「只看推薦」看全部分析過的商品。" : "任務跑過之後會出現在這裡。";
+    setHTML($("#results"), `<div class="empty">${who}還沒有${rec ? "推薦的" : ""}結果。${tip}</div>`); return;
+  }
+  setHTML($("#results"), rows.map((r) => {
     const a = r.analysis || {}, it = r.item || {}, m = r.market;
     const kind = it.is_fleamarket ? "PayPayフリマ" : it.is_fixed_price ? "定額" : `拍賣 · ${it.bid_count} 人出價`;
     const ratio = m && m.median ? ` · 行情 ${yen(m.median)}（${Math.round(it.price / m.median * 100)}%）` : "";
@@ -259,14 +271,17 @@ async function loadResults() {
         ${(a.questions_for_seller || []).length ? `<details><summary class="sub">建議詢問賣家</summary><div class="sub">${a.questions_for_seller.map(esc).join("<br>")}</div></details>` : ""}
         ${it.end_time && !it.is_fleamarket ? `<div class="sub">結束：${esc(it.end_time.replace("T", " ").slice(0, 16))}（日本時間）</div>` : ""}
       </div></div>`;
-  }).join("");
+  }).join(""));
 }
 
 async function loadTasks() {
   TASKS = await api("/api/tasks");
   const sel = $("#f-task"), cur = sel.value;
-  sel.innerHTML = `<option value="">全部任務</option>` + TASKS.map((t) => `<option ${t.name === cur ? "selected" : ""}>${esc(t.name)}</option>`).join("");
-  $("#tasks").innerHTML = TASKS.map((t, i) => {
+  const names = TASKS.map((t) => t.name);
+  const keep = names.includes(cur) ? cur : "";
+  setHTML(sel, `<option value="">全部任務</option>` + names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join(""));
+  if (sel.value !== keep) sel.value = keep;  // 重畫後還原選擇；選的任務被刪掉了 → 回到全部
+  setHTML($("#tasks"), TASKS.map((t, i) => {
     const lr = t.last_run;
     const st = lr ? `<span class="pill ${lr.status === "ok" ? "good" : lr.status === "error" ? "bad" : ""}">${esc(lr.status)}</span> ${ago(lr.started_at)}<div class="sub">${esc(lr.message || "")}</div>` : "-";
     const cond = [t.min_price || t.max_price ? `${yen(t.min_price)}–${yen(t.max_price)}` : "", { new: "新上架", end: "快結束", price: "低價" }[t.sort], `每 ${t.interval_minutes} 分`].filter(Boolean).join(" · ");
@@ -275,24 +290,25 @@ async function loadTasks() {
       <td><b>${esc(t.name)}</b><div class="sub">${esc(t.keyword)}</div></td>
       <td class="sub">${esc(cond)}</td>
       <td>${st}</td>
-      <td class="sub">${t.enabled ? until(STATUS.next_run?.[t.name]) : "停用"}</td>
-      <td style="white-space:nowrap"><button class="btn" onclick="runNow(${i})" ${STATUS.running === t.name ? "disabled" : ""}>立即執行</button>
+      <td class="sub">${isRunning(t.name) ? `<span class="pill good">執行中…</span>` : isQueued(t.name) ? `<span class="pill">排隊中</span>` : t.enabled ? until(STATUS.next_run?.[t.name]) : "停用"}</td>
+      <td style="white-space:nowrap"><button class="btn" onclick="runNow(${i})" ${isRunning(t.name) || isQueued(t.name) ? "disabled" : ""}>${isRunning(t.name) ? "執行中…" : isQueued(t.name) ? "排隊中" : "立即執行"}</button>
         <button class="btn" onclick="edit(${i})">編輯</button></td></tr>`;
-  }).join("") || `<tr><td colspan="6" class="empty">還沒有任務</td></tr>`;
+  }).join("") || `<tr><td colspan="6" class="empty">還沒有任務</td></tr>`);
 }
 
 async function loadLogs() {
   const d = await api("/api/logs");
   const el = $("#logs"); const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 20;
-  el.textContent = d.lines.join("\n") || "（尚無日誌）";
+  const text = d.lines.join("\n") || "（尚無日誌）";
+  if (el.textContent !== text) el.textContent = text;
   if (atBottom) el.scrollTop = el.scrollHeight;
-  $("#runs").innerHTML = d.runs.map((r) => `<tr><td>${esc(r.task)}</td><td class="sub">${ago(r.started_at)}</td>
-    <td><span class="pill ${r.status === "ok" ? "good" : r.status === "error" ? "bad" : ""}">${esc(r.status)}</span></td><td class="sub">${esc(r.message)}</td></tr>`).join("");
+  setHTML($("#runs"), d.runs.map((r) => `<tr><td>${esc(r.task)}</td><td class="sub">${ago(r.started_at)}</td>
+    <td><span class="pill ${r.status === "ok" ? "good" : r.status === "error" ? "bad" : ""}">${esc(r.status)}</span></td><td class="sub">${esc(r.message)}</td></tr>`).join(""));
 }
 
 const saveAll = () => api("/api/tasks", { method: "PUT", body: JSON.stringify(TASKS.map(({ last_run, ...t }) => t)) });
 window.toggle = async (i, on) => { TASKS[i].enabled = on; await saveAll(); refresh(); };
-window.runNow = async (i) => { await api(`/api/tasks/${encodeURIComponent(TASKS[i].name)}/run`, { method: "POST" }); await loadStatus(); loadTasks(); };
+window.runNow = async (i) => { await api(`/api/tasks/${encodeURIComponent(TASKS[i].name)}/run`, { method: "POST" }); await new Promise((r) => setTimeout(r, 300)); refresh(); };
 
 const F = $("#task-form");
 const listFields = ["exclude_words", "require_words"], numFields = ["min_price", "max_price", "max_pages", "min_seller_rating", "max_bids", "max_end_hours", "interval_minutes", "notify_min_score", "deal_ratio"],
@@ -334,11 +350,21 @@ $("#dlg").addEventListener("close", async () => {
 $("#reload").onclick = () => loadResults();
 $("#f-task").onchange = $("#f-rec").onchange = () => loadResults();
 
-async function refresh() {
+async function refreshOnce() {
   await loadStatus();
   if (!$("#tab-results").hidden) { await loadTasks(); await loadResults(); }
   if (!$("#tab-tasks").hidden) await loadTasks();
   if (!$("#tab-logs").hidden) await loadLogs();
+}
+let refreshing = null, refreshAgain = false;
+function refresh() {
+  if (refreshing) { refreshAgain = true; return refreshing; }
+  refreshing = (async () => {
+    try { do { refreshAgain = false; await refreshOnce(); } while (refreshAgain); }
+    catch (e) { console.error(e); }
+    finally { refreshing = null; }
+  })();
+  return refreshing;
 }
 // 語言切換：選項文字用跳脫字元寫，避免簡體模式整頁轉換時把「繁體」也轉掉
 const LANGS = [["zh-TW", "\u7e41\u9ad4\u4e2d\u6587"], ["zh-CN", "\u7b80\u4f53\u4e2d\u6587"]];
@@ -349,7 +375,13 @@ $("#lang-switch").onchange = async (e) => {
 };
 
 refresh().then(() => { $("#lang-switch").value = STATUS.lang; });
-setInterval(() => { if (!$("#dlg").open) refresh(); }, 8000);
+// 有任務在跑時刷新快一點，進度看得比較即時
+let lastTick = 0;
+setInterval(() => {
+  const busy = (STATUS.running || []).length || (STATUS.queue || []).length;
+  if ($("#dlg").open || Date.now() - lastTick < (busy ? 3000 : 8000)) return;
+  lastTick = Date.now(); refresh();
+}, 1000);
 </script>
 </body>
 </html>
