@@ -77,7 +77,7 @@ async def _image_payloads(http: httpx.AsyncClient, urls: list[str]) -> list[str]
             mime = r.headers.get("content-type", "image/jpeg").split(";")[0]
             return f"data:{mime};base64,{base64.b64encode(r.content).decode()}"
         except Exception as e:
-            log.warning("圖片下載失敗 %s：%s", u, e)
+            log.warning("圖片下載失敗 %s：%s", u, str(e) or type(e).__name__)
             return None
 
     res = await asyncio.gather(*(one(u) for u in urls))

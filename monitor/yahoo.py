@@ -57,6 +57,14 @@ class YahooBlocked(YahooError):
     """日拍拒絕存取（403 / 429 / 503）。所有任務一起暫停，不要繼續打。"""
 
 
+class YahooNetworkError(YahooError):
+    """連不上日拍（網路 / 代理問題）。reason 是不含建議的原因說明。"""
+
+    def __init__(self, message: str, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
 # ---------------------------------------------------------------- 請求節流
 # 所有任務共用同一個節奏：不管同時跑幾個任務，對日拍的總請求頻率都是
 # 「每 REQUEST_DELAY_SECONDS 秒最多一次」，並加上隨機間隔，避免固定頻率的連續請求。
@@ -154,13 +162,31 @@ def _pct(v: Any) -> float | None:
         return None
 
 
-def make_client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(
-        headers=HEADERS,
-        timeout=30,
-        follow_redirects=True,
-        proxy=config.SCRAPE_PROXY_URL or None,
-    )
+def make_client(proxy: str | None = None, timeout: float = 30) -> httpx.AsyncClient:
+    proxy = proxy or config.SCRAPE_PROXY_URL or None
+    client = httpx.AsyncClient(headers=HEADERS, timeout=timeout, follow_redirects=True, proxy=proxy)
+    client.yam_proxy = proxy  # 記下這個連線用的代理，錯誤訊息要用
+    return client
+
+
+def describe_error(e: BaseException) -> str:
+    """把網路例外轉成看得懂的說明（httpx 的逾時例外常常沒有訊息）。"""
+    if isinstance(e, httpx.ProxyError):
+        kind = tr("代理連線失敗，請檢查「日拍代理」")
+    elif isinstance(e, httpx.ConnectTimeout):
+        kind = tr("連線逾時，連不上日拍")
+    elif isinstance(e, httpx.ConnectError):
+        kind = tr("連不上日拍")
+    elif isinstance(e, httpx.TimeoutException):
+        kind = tr("日拍回應逾時")
+    else:
+        kind = type(e).__name__
+    detail = str(e).strip()
+    return f"{kind}（{detail}）" if detail and detail != kind else kind
+
+
+def _is_network_error(e: BaseException | None) -> bool:
+    return isinstance(e, (httpx.ConnectError, httpx.TimeoutException, httpx.ProxyError))
 
 
 async def _get(client: httpx.AsyncClient, url: str, *, retries: int = 2) -> str:
@@ -176,14 +202,59 @@ async def _get(client: httpx.AsyncClient, url: str, *, retries: int = 2) -> str:
             if r.status_code in (403, 429, 503):
                 raise _on_blocked(r.status_code)
             r.raise_for_status()
+            host = r.url.host or ""
+            if not host.endswith("yahoo.co.jp"):
+                # 被轉到別的網站：常見原因是地區限制（例如歐洲無法使用日本雅虎）或網路被攔截
+                raise YahooError(tr("被導向到 {host}，不是日拍頁面：可能是所在地區無法使用日本雅虎，或網路 / 代理攔截了").format(host=host))
             _block["strikes"] = 0
             return r.text
         except YahooError:
             raise
         except Exception as e:  # 網路錯誤：等久一點再重試
             last = e
-            await asyncio.sleep(10 * (attempt + 1))
-    raise YahooError(tr("請求失敗：{url}：{err}").format(url=url, err=last))
+            log.warning("日拍請求失敗（第 %s 次）%s：%s", attempt + 1, url, describe_error(e))
+            if attempt < retries:
+                await asyncio.sleep(10 * (attempt + 1))
+    reason = describe_error(last) if last else "?"
+    msg = tr("請求失敗：{err}").format(err=reason)
+    if not _is_network_error(last):
+        raise YahooError(msg)
+    proxy = getattr(client, "yam_proxy", None)
+    if proxy:
+        msg += tr("。目前透過代理 {p} 連線：請確認代理軟體有開、位址和連接埠正確").format(p=proxy)
+    else:
+        msg += tr("。請檢查網路；如果要開 VPN / 代理才能用 AI，「設定 → 爬取 → 日拍代理」也要填同一個代理")
+    raise YahooNetworkError(msg, reason)
+
+
+async def check_connection() -> dict[str, Any]:
+    """設定頁的「測試日拍連線」：實際搜尋一次，回報哪個環節有問題。"""
+    task = {"keyword": "Nintendo Switch", "sort": "new"}
+    if blocked_until():
+        return {"ok": False, "message": str(_blocked_error())}
+    via = config.SCRAPE_PROXY_URL
+    try:
+        async with make_client(timeout=15) as c:
+            items, total = await search(c, task, 1, retries=0)
+    except YahooError as e:
+        msg = tr("❌ 搜尋失敗：") + str(e)
+        # 沒設日拍代理、但有 AI 代理：試試看走 AI 代理能不能連上
+        ai_proxy = config.AI_PROXY_URL
+        if not via and ai_proxy:
+            try:
+                async with make_client(ai_proxy, timeout=15) as c:
+                    items, total = await search(c, task, 1, retries=0)
+                if items:
+                    msg += "\n" + tr("✅ 改走 AI 代理（{p}）可以連上日拍，請把「日拍代理」也填成這個").format(p=ai_proxy)
+            except Exception as e2:
+                why = e2.reason if isinstance(e2, YahooNetworkError) else str(e2) if isinstance(e2, YahooError) else describe_error(e2)
+                msg += "\n" + tr("改走 AI 代理（{p}）也失敗：{why}").format(p=ai_proxy, why=why)
+        return {"ok": False, "message": msg}
+    if not items:
+        return {"ok": False, "message": tr("⚠ 連得上日拍，但搜尋結果是空的（總共 {n} 筆），日拍頁面可能改版了").format(n=total)}
+    route = tr("透過代理 {p}").format(p=via) if via else tr("直接連線")
+    return {"ok": True, "message": tr("✅ 連線正常（{route}）：搜尋「{kw}」找到 {n} 筆，例如：{title}").format(
+        route=route, kw=task["keyword"], n=total, title=items[0].title[:40])}
 
 
 # --------------------------------------------------------------------------- 搜尋
@@ -250,10 +321,11 @@ def _parse_search_item(raw: dict[str, Any]) -> Item:
     )
 
 
-async def search(client: httpx.AsyncClient, task: dict[str, Any], page: int = 1, *, closed: bool = False) -> tuple[list[Item], int]:
+async def search(client: httpx.AsyncClient, task: dict[str, Any], page: int = 1, *, closed: bool = False,
+                 retries: int = 2) -> tuple[list[Item], int]:
     base = CLOSED_SEARCH_URL if closed else SEARCH_URL
     url = f"{base}?{urlencode(build_search_params(task, page, closed=closed))}"
-    html = await _get(client, url)
+    html = await _get(client, url, retries=retries)
     state = _initial_state(_extract_next_data(html))
     listing = (state.get("search") or {}).get("items", {}).get("listing") or {}
     raws = listing.get("items") or []

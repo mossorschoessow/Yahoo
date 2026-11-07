@@ -152,6 +152,11 @@ async def test_ai() -> dict[str, Any]:
         return {"ok": False, "message": tr("連線失敗：") + str(e)}
 
 
+@app.post("/api/settings/test-yahoo")
+async def test_yahoo() -> dict[str, Any]:
+    return await yahoo.check_connection()
+
+
 @app.post("/api/settings/test-notify")
 async def test_notify() -> dict[str, Any]:
     res = await notify.send_test()
