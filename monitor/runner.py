@@ -4,7 +4,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -31,7 +30,7 @@ TASK_DEFAULTS: dict[str, Any] = {
     "min_seller_rating": None,   # 好評率下限（%）
     "max_bids": None,            # 出價數上限（太多人搶通常撿不到漏）
     "max_end_hours": None,       # 只看 N 小時內結束的拍賣
-    "interval_minutes": 15,
+    "interval_minutes": 20,
     "ai_enabled": True,
     "notify_min_score": 70,
     "deal_ratio": 0.7,           # 規則模式：現價 ≤ 中位數 × 此比例才通知
@@ -39,12 +38,15 @@ TASK_DEFAULTS: dict[str, Any] = {
 }
 
 
+MAX_PAGES = 5  # 每次最多掃描幾頁（每頁 50 筆）
+
+
 def normalize_task(t: dict[str, Any]) -> dict[str, Any]:
     out = {**TASK_DEFAULTS, **t}
     if not out.get("name"):
         out["name"] = out.get("keyword", "未命名任務")
-    out["interval_minutes"] = max(config.MIN_INTERVAL_MINUTES, int(out.get("interval_minutes") or 15))
-    out["max_pages"] = max(1, min(10, int(out.get("max_pages") or 1)))
+    out["interval_minutes"] = max(config.MIN_INTERVAL_MINUTES, int(out.get("interval_minutes") or 20))
+    out["max_pages"] = max(1, min(MAX_PAGES, int(out.get("max_pages") or 1)))
     return out
 
 
@@ -127,7 +129,6 @@ async def run_task(task: dict[str, Any], *, progress=None) -> dict[str, Any]:
                     candidates.append(it)
                 if len(items) < 50:
                     break
-                await asyncio.sleep(config.REQUEST_DELAY_SECONDS)
 
             if not candidates:
                 say(tr("沒有新商品"))
@@ -136,7 +137,6 @@ async def run_task(task: dict[str, Any], *, progress=None) -> dict[str, Any]:
 
             batch = candidates[: config.MAX_AI_PER_RUN]
             say(tr("新商品 {a} 筆，本次處理 {b} 筆").format(a=len(candidates), b=len(batch)))
-            await asyncio.sleep(config.REQUEST_DELAY_SECONDS)
             market = await get_market(client, task)
             if market:
                 say(tr("近期成交行情：中位數 ¥{m:,}（樣本 {n}）").format(m=market["median"], n=market["sample_size"]))
@@ -146,9 +146,10 @@ async def run_task(task: dict[str, Any], *, progress=None) -> dict[str, Any]:
                 say(tr("⚠ 未設定 OPENAI_API_KEY，改用規則模式（只比價格）"))
 
             for it in batch:
-                await asyncio.sleep(config.REQUEST_DELAY_SECONDS)
                 try:
                     await yahoo.fetch_detail(client, it)
+                except yahoo.YahooBlocked:
+                    raise  # 被日拍拒絕：剩下的商品留到下次，不要標記為已看過
                 except yahoo.YahooError as e:
                     say(tr("商品頁讀取失敗 {id}：{e}").format(id=it.id, e=e))
                     storage.mark_seen(name, it.id)
@@ -176,6 +177,10 @@ async def run_task(task: dict[str, Any], *, progress=None) -> dict[str, Any]:
         storage.finish_run(run_id, "ok", msg, scanned, analyzed, hits)
         say(tr("完成：") + msg)
         return {"scanned": scanned, "analyzed": analyzed, "hits": hits}
+    except yahoo.YahooBlocked as e:
+        log.warning("[%s] %s", name, e)
+        storage.finish_run(run_id, "error", str(e), scanned, analyzed, hits)
+        raise
     except Exception as e:
         log.exception("[%s] 任務失敗", name)
         storage.finish_run(run_id, "error", str(e), scanned, analyzed, hits)

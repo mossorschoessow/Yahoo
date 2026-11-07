@@ -8,9 +8,10 @@ from __future__ import annotations
 import asyncio
 import collections
 import logging
+import random
 import time
 
-from . import config, runner, storage
+from . import config, runner, storage, yahoo
 from .i18n import tr
 
 log = logging.getLogger(__name__)
@@ -45,7 +46,8 @@ class Scheduler:
         finally:
             self.running.discard(name)
             self._jobs.pop(name, None)
-            self.next_run[name] = time.time() + task["interval_minutes"] * 60
+            # 間隔多加 0～10% 的隨機時間，任務不會總是擠在同一時刻
+            self.next_run[name] = time.time() + task["interval_minutes"] * 60 * random.uniform(1.0, 1.1)
             self._poke()
 
     def _start(self, task: dict) -> None:
@@ -101,11 +103,11 @@ class Scheduler:
         while not self._stop.is_set():
             self._wake.clear()
             tasks = {t["name"]: t for t in runner.load_tasks()}
-            for i, name in enumerate(self._pick(tasks)):
-                if i:  # 同時啟動多個任務時錯開一點，不要同一秒一起打日拍
-                    await asyncio.sleep(min(config.REQUEST_DELAY_SECONDS, 3))
-                if name not in self.running:
-                    self._start(tasks[name])
+            # 日拍限制中：已排隊的任務繼續等，解除後才啟動（請求節奏由 yahoo 模組統一控制）
+            if not yahoo.blocked_until():
+                for name in self._pick(tasks):
+                    if name not in self.running:
+                        self._start(tasks[name])
             try:
                 await asyncio.wait_for(self._wake.wait(), timeout=5)
             except asyncio.TimeoutError:

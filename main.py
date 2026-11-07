@@ -53,7 +53,6 @@ async def cmd_search(keyword: str, sort: str, closed: bool) -> None:
             kind = "フリマ" if it.is_fleamarket else ("定額" if it.is_fixed_price else f"拍賣{it.bid_count}標")
             print(f"  ¥{it.price:>8,}  {kind:<6} {it.condition_name:<10} {it.title[:50]}\n            {it.url}")
         if not closed:
-            await asyncio.sleep(config.REQUEST_DELAY_SECONDS)
             m = await yahoo.market_price(c, task)
             print("近期成交行情：", m)
 
