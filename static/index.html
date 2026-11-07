@@ -141,13 +141,13 @@ code { background: var(--surface-2); padding: 0 4px; border-radius: 4px; }
   <label>商品狀態<select name="condition"><option value="any">不限</option><option value="used">二手</option><option value="new">新品</option></select></label>
   <label>出售方式<select name="listing_type"><option value="any">不限</option><option value="auction">只看拍賣</option><option value="buynow">只看定額</option></select></label>
   <label>排序<select name="sort"><option value="new">新上架優先（撿漏推薦）</option><option value="end">快結束優先（狙擊）</option><option value="price">價格由低到高</option></select></label>
-  <label>每次掃描頁數（每頁 50 筆）<input name="max_pages" type="number" min="1" max="10"></label>
+  <label>每次掃描頁數（每頁 50 筆）<input name="max_pages" type="number" min="1" max="5"></label>
   <label class="full">排除字（標題含這些字就跳過，逗號分隔）<input name="exclude_words"></label>
   <label class="full">必要字（標題必須全部包含，逗號分隔）<input name="require_words"></label>
   <label>賣家好評率下限（%）<input name="min_seller_rating" type="number" min="0" max="100" step="0.1"></label>
   <label>出價人數上限<input name="max_bids" type="number" min="0"></label>
   <label>只看 N 小時內結束的拍賣<input name="max_end_hours" type="number" min="0" step="0.5"></label>
-  <label>執行間隔（分鐘）<input name="interval_minutes" type="number" min="5"></label>
+  <label>執行間隔（分鐘）<input name="interval_minutes" type="number" min="10"></label>
   <label>AI 分數達到多少才通知<input name="notify_min_score" type="number" min="0" max="100"></label>
   <label>規則模式比價門檻（現價 ≤ 行情 × ?）<input name="deal_ratio" type="number" min="0" max="2" step="0.05"></label>
   <label class="chk"><input type="checkbox" name="enabled"> 啟用</label>
@@ -232,7 +232,9 @@ async function loadStatus() {
   const n = STATUS.notify_channels.length ? `<span class="pill good">通知：${STATUS.notify_channels.join("、")}</span>` : `<span class="pill warn">未設定通知</span>`;
   const run = (STATUS.running || []).length ? `<span class="pill good">執行中：${STATUS.running.map(esc).join("、")}</span>` : "";
   const q = (STATUS.queue || []).length ? `<span class="pill">排隊中：${STATUS.queue.map(esc).join("、")}</span>` : "";
-  setHTML($("#status"), ai + n + run + q);
+  const hhmm = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const blk = STATUS.blocked_until ? `<span class="pill bad" title="日拍拒絕存取，已自動暫停所有任務">日拍限制中，${hhmm(STATUS.blocked_until)} 後恢復</span>` : "";
+  setHTML($("#status"), ai + n + blk + run + q);
   $("#first-run").hidden = !STATUS.first_run;
 }
 
@@ -315,7 +317,7 @@ const listFields = ["exclude_words", "require_words"], numFields = ["min_price",
   boolFields = ["enabled", "ai_enabled", "individual_only", "include_fleamarket"];
 window.edit = (i) => {
   editing = i;
-  const t = i >= 0 ? TASKS[i] : { enabled: true, ai_enabled: true, include_fleamarket: true, sort: "new", condition: "any", listing_type: "any", max_pages: 1, interval_minutes: 15, notify_min_score: 70, deal_ratio: 0.7, exclude_words: ["ジャンク", "部品取り", "箱のみ", "空箱", "写真のみ"] };
+  const t = i >= 0 ? TASKS[i] : { enabled: true, ai_enabled: true, include_fleamarket: true, sort: "new", condition: "any", listing_type: "any", max_pages: 1, interval_minutes: 20, notify_min_score: 70, deal_ratio: 0.7, exclude_words: ["ジャンク", "部品取り", "箱のみ", "空箱", "写真のみ"] };
   for (const el of F.elements) {
     if (!el.name) continue;
     const v = t[el.name];

@@ -8,8 +8,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import re
 import statistics
+import time
 from dataclasses import dataclass, field, asdict
 from typing import Any
 from urllib.parse import urlencode
@@ -49,6 +51,52 @@ _NEXT_DATA_RE = re.compile(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re
 
 class YahooError(RuntimeError):
     pass
+
+
+class YahooBlocked(YahooError):
+    """日拍拒絕存取（403 / 429 / 503）。所有任務一起暫停，不要繼續打。"""
+
+
+# ---------------------------------------------------------------- 請求節流
+# 所有任務共用同一個節奏：不管同時跑幾個任務，對日拍的總請求頻率都是
+# 「每 REQUEST_DELAY_SECONDS 秒最多一次」，並加上隨機間隔，避免固定頻率的連續請求。
+_pace: dict[str, Any] = {"loop": None, "lock": None, "next": 0.0}
+# 被拒絕後的暫停時間：30 → 60 → 120 分鐘，成功一次就重置
+_block: dict[str, float] = {"until": 0.0, "strikes": 0}
+BLOCK_MINUTES = (30, 60, 120)
+
+
+def _pace_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    if _pace["loop"] is not loop:  # 每個事件迴圈各用一把鎖（CLI / 測試會建立新的迴圈）
+        _pace.update(loop=loop, lock=asyncio.Lock())
+    return _pace["lock"]
+
+
+async def _wait_turn() -> None:
+    async with _pace_lock():
+        wait = _pace["next"] - time.monotonic()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _pace["next"] = time.monotonic() + config.REQUEST_DELAY_SECONDS * random.uniform(0.8, 1.6)
+
+
+def blocked_until() -> float:
+    """日拍限制中時回傳解除的時間（time.time()），沒有限制回傳 0。"""
+    return _block["until"] if _block["until"] > time.time() else 0.0
+
+
+def _blocked_error() -> YahooBlocked:
+    left = max(1, round((_block["until"] - time.time()) / 60))
+    return YahooBlocked(tr("日拍暫時拒絕存取，所有任務暫停，約 {m} 分鐘後自動恢復").format(m=left))
+
+
+def _on_blocked(code: int) -> YahooBlocked:
+    n = int(_block["strikes"])
+    minutes = BLOCK_MINUTES[min(n, len(BLOCK_MINUTES) - 1)]
+    _block.update(until=time.time() + minutes * 60, strikes=n + 1)
+    log.warning("日拍回應 HTTP %s，暫停 %s 分鐘", code, minutes)
+    return YahooBlocked(tr("被日拍拒絕（HTTP {code}），所有任務暫停 {m} 分鐘").format(code=code, m=minutes))
 
 
 @dataclass
@@ -118,19 +166,23 @@ def make_client() -> httpx.AsyncClient:
 async def _get(client: httpx.AsyncClient, url: str, *, retries: int = 2) -> str:
     last: Exception | None = None
     for attempt in range(retries + 1):
+        if blocked_until():
+            raise _blocked_error()
+        await _wait_turn()
         try:
             r = await client.get(url)
             if r.status_code == 404:
                 raise YahooError(f"404 Not Found: {url}")
             if r.status_code in (403, 429, 503):
-                raise YahooError(tr("被日拍拒絕（HTTP {code}），請調大請求間隔").format(code=r.status_code))
+                raise _on_blocked(r.status_code)
             r.raise_for_status()
+            _block["strikes"] = 0
             return r.text
         except YahooError:
             raise
-        except Exception as e:  # 網路錯誤重試
+        except Exception as e:  # 網路錯誤：等久一點再重試
             last = e
-            await asyncio.sleep(3 * (attempt + 1))
+            await asyncio.sleep(10 * (attempt + 1))
     raise YahooError(tr("請求失敗：{url}：{err}").format(url=url, err=last))
 
 

@@ -11,7 +11,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from . import ai, config, notify, runner, storage
+from . import ai, config, notify, runner, storage, yahoo
 from .i18n import tr
 from .scheduler import scheduler
 
@@ -64,6 +64,7 @@ def status() -> dict[str, Any]:
         "notify_channels": notify.channels(),
         "running": sorted(scheduler.running),
         "max_concurrent": scheduler.limit(),
+        "blocked_until": yahoo.blocked_until(),
         "queue": list(scheduler.queue),
         "next_run": {k: v for k, v in scheduler.next_run.items()},
         "now": time.time(),
