@@ -16,6 +16,7 @@
     --warn: #f0b955; --warn-bg: #3a2c10; --bad: #ff8a80; --bad-bg: #3d1a17; }
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }  /* .banner 等元素有自己的 display，要強制讓 hidden 生效 */
 body { margin: 0; background: var(--bg); color: var(--text);
   font: 14px/1.55 system-ui, -apple-system, "Segoe UI", "Microsoft JhengHei", "PingFang TC", sans-serif; }
 header { background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5; }
@@ -90,6 +91,10 @@ code { background: var(--surface-2); padding: 0 4px; border-radius: 4px; }
       <b>歡迎使用！</b> 先到「設定」填 AI 的 API Key 和至少一種通知方式（例如 Telegram），再到「任務」設定你想找的商品。
       <button class="btn primary" onclick="goTab('settings')">前往設定</button>
     </div>
+    <div class="banner" id="no-task" hidden>
+      <b>目前沒有啟用的任務，不會抓取任何商品。</b> 範例任務預設是停用的：到「任務」勾選「啟用」，或新增一個任務。
+      <button class="btn primary" onclick="goTab('tasks')">前往任務</button>
+    </div>
     <div class="toolbar">
       <select id="f-task"><option value="">全部任務</option></select>
       <label><input type="checkbox" id="f-rec" checked> 只看推薦</label>
@@ -120,6 +125,7 @@ code { background: var(--surface-2); padding: 0 4px; border-radius: 4px; }
       <button class="btn primary" id="save-settings">儲存設定</button>
       <button class="btn" id="test-ai">測試 AI 連線</button>
       <button class="btn" id="test-notify">發送測試通知</button>
+      <button class="btn" id="test-yahoo">測試日拍連線</button>
     </div>
     <pre class="log" id="settings-msg" hidden></pre>
     <div class="panel">
@@ -217,7 +223,7 @@ async function saveSettings() {
   await loadStatus();
 }
 $("#save-settings").onclick = async () => { await saveSettings(); showMsg("✅ 已儲存", true); };
-for (const [btn, path] of [["#test-ai", "/api/settings/test-ai"], ["#test-notify", "/api/settings/test-notify"]]) {
+for (const [btn, path] of [["#test-ai", "/api/settings/test-ai"], ["#test-notify", "/api/settings/test-notify"], ["#test-yahoo", "/api/settings/test-yahoo"]]) {
   $(btn).onclick = async (e) => {
     e.target.disabled = true; showMsg("測試中…", true);
     try { await saveSettings(); const r = await api(path, { method: "POST" }); showMsg(r.message, r.ok); }
@@ -279,6 +285,7 @@ async function loadResults() {
 async function loadTasks() {
   TASKS = await api("/api/tasks");
   const sel = $("#f-task"), cur = sel.value;
+  $("#no-task").hidden = STATUS.first_run || TASKS.some((t) => t.enabled);
   const names = TASKS.map((t) => t.name);
   const keep = names.includes(cur) ? cur : "";
   setHTML(sel, `<option value="">全部任務</option>` + names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join(""));

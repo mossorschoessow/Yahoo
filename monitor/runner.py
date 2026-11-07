@@ -42,7 +42,8 @@ MAX_PAGES = 5  # 每次最多掃描幾頁（每頁 50 筆）
 
 
 def normalize_task(t: dict[str, Any]) -> dict[str, Any]:
-    out = {**TASK_DEFAULTS, **t}
+    # 欄位是 null 時用預設值（否則 ai_enabled: null 會被當成「不用 AI」）
+    out = {**TASK_DEFAULTS, **{k: v for k, v in t.items() if v is not None or TASK_DEFAULTS.get(k) is None}}
     if not out.get("name"):
         out["name"] = out.get("keyword", "未命名任務")
     out["interval_minutes"] = max(config.MIN_INTERVAL_MINUTES, int(out.get("interval_minutes") or 20))
