@@ -38,7 +38,7 @@ TASK_DEFAULTS: dict[str, Any] = {
 }
 
 
-MAX_PAGES = 5  # 每次最多掃描幾頁（每頁 50 筆）
+MAX_PAGES = 5  # 每次最多掃描幾頁（每頁 100 筆）
 
 
 def normalize_task(t: dict[str, Any]) -> dict[str, Any]:
@@ -93,16 +93,29 @@ def prefilter(item: yahoo.Item, task: dict[str, Any]) -> str | None:
     return None
 
 
+def _market_key(task: dict[str, Any]) -> str:
+    """會影響行情的搜尋條件。條件改了，舊的行情就不能再用。"""
+    return json.dumps(
+        [yahoo.build_search_params(task, 1, closed=True),
+         sorted(str(w) for w in task.get("exclude_words") or []),
+         sorted(str(w) for w in task.get("require_words") or [])],
+        ensure_ascii=False, sort_keys=True)
+
+
 async def get_market(client, task: dict[str, Any]) -> dict | None:
+    key = _market_key(task)
     cached = storage.get_market(task["name"], config.MARKET_CACHE_HOURS)
-    if cached:
-        return cached
+    # 「查過但樣本不足」也會記下來（market 是 None），不用每次都重查一遍
+    if isinstance(cached, dict) and cached.get("key") == key:
+        return cached.get("market")
     try:
         m = await yahoo.market_price(client, task)
+    except yahoo.YahooBlocked:
+        raise
     except Exception as e:
         log.warning("[%s] 取得成交行情失敗：%s", task["name"], e)
         return None
-    storage.set_market(task["name"], m)
+    storage.set_market(task["name"], {"key": key, "market": m})
     return m
 
 
@@ -115,20 +128,30 @@ async def run_task(task: dict[str, Any], *, progress=None) -> dict[str, Any]:
     try:
         seen = storage.seen_ids(name)
         candidates: list[yahoo.Item] = []
+        picked: set[str] = set()
         async with yahoo.make_client() as client:
             for page in range(1, task["max_pages"] + 1):
                 items, total = await yahoo.search(client, task, page)
                 scanned += len(items)
                 say(tr("第 {page} 頁：{n} 筆（總共 {total} 筆）").format(page=page, n=len(items), total=total))
+                fresh = 0
                 for it in items:
-                    if it.id in seen:
+                    # picked：翻頁途中有新商品上架時，同一件商品會出現在兩頁
+                    if it.id in seen or it.id in picked:
                         continue
+                    picked.add(it.id)
+                    fresh += 1
                     reason = prefilter(it, task)
                     if reason:
                         storage.mark_seen(name, it.id)  # 不符合條件的直接記下，不再處理
                         continue
                     candidates.append(it)
-                if len(items) < 50:
+                if not items or page * yahoo.PAGE_SIZE >= total:
+                    break  # 已經是最後一頁
+                if task.get("sort", "new") == "new" and fresh == 0:
+                    # 新上架優先時，整頁都看過代表後面更舊的也都看過了，不用再翻
+                    if page < task["max_pages"]:
+                        say(tr("這一頁沒有新上架的商品，不再往後翻"))
                     break
 
             if not candidates:

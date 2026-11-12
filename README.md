@@ -89,7 +89,7 @@ python main.py daemon                                     # 不開網頁，只�
 | `condition` | `any` / `used` / `new` |
 | `listing_type` | `any` / `auction`（只看拍賣）/ `buynow`（只看定額） |
 | `sort` | `new` 新上架優先（**撿漏首選**）/ `end` 快結束優先（狙擊）/ `price` 低價優先 |
-| `max_pages` | 每次掃幾頁（每頁 50 筆） |
+| `max_pages` | 每次掃幾頁（每頁 100 筆） |
 | `exclude_words` | 標題含這些字就跳過，例如 `ジャンク`、`箱のみ`、`ケース` |
 | `require_words` | 標題必須包含的字 |
 | `individual_only` | 只看個人賣家 |
