@@ -10,7 +10,7 @@
     "listing_type": "any",
     "sort": "new",
     "max_pages": 1,
-    "exclude_words": ["ジャンク", "部品取り", "箱のみ", "空箱", "写真のみ", "ケース", "カバー", "フィルム", "ソフト"],
+    "exclude_words": ["ジャンク", "部品取り", "箱のみ", "空箱", "写真のみ", "ケースのみ", "ソフトのみ"],
     "require_words": [],
     "individual_only": false,
     "include_fleamarket": true,
@@ -33,7 +33,7 @@
     "sort": "end",
     "max_end_hours": 6,
     "max_bids": 15,
-    "exclude_words": ["ジャンク", "部品取り", "ケース", "フード", "ストラップ", "バッテリーのみ"],
+    "exclude_words": ["ジャンク", "部品取り", "箱のみ", "バッテリーのみ"],
     "interval_minutes": 20,
     "notify_min_score": 70
   }

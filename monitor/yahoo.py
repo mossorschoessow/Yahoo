@@ -12,6 +12,7 @@ import random
 import re
 import statistics
 import time
+import unicodedata
 from dataclasses import dataclass, field, asdict
 from typing import Any
 from urllib.parse import urlencode
@@ -31,10 +32,14 @@ FLEA_ITEM_URL = "https://paypayfleamarket.yahoo.co.jp/item/{id}"
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/130.0 Safari/537.36"
+        "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
     ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "ja,en;q=0.8",
 }
+
+PAGE_SIZE = 100          # 日拍一頁最多 100 筆：同樣一次請求，能看到的商品是 50 筆時的兩倍
+MAX_QUERY_EXCLUDES = 10  # 最多把幾個排除字放進搜尋字串（其餘的仍由本地過濾）
 
 CONDITION_NAMES = {
     "NEW": "新品",
@@ -189,7 +194,8 @@ def _is_network_error(e: BaseException | None) -> bool:
     return isinstance(e, (httpx.ConnectError, httpx.TimeoutException, httpx.ProxyError))
 
 
-async def _get(client: httpx.AsyncClient, url: str, *, retries: int = 2) -> str:
+async def _get(client: httpx.AsyncClient, url: str, *, retries: int = 2, allow_404: bool = False) -> str:
+    """allow_404：搜尋沒有結果時日拍回的是 404（頁面內容正常），要照常解析而不是當成錯誤。"""
     last: Exception | None = None
     for attempt in range(retries + 1):
         if blocked_until():
@@ -197,11 +203,12 @@ async def _get(client: httpx.AsyncClient, url: str, *, retries: int = 2) -> str:
         await _wait_turn()
         try:
             r = await client.get(url)
-            if r.status_code == 404:
+            if r.status_code == 404 and not allow_404:
                 raise YahooError(f"404 Not Found: {url}")
             if r.status_code in (403, 429, 503):
                 raise _on_blocked(r.status_code)
-            r.raise_for_status()
+            if r.status_code != 404:
+                r.raise_for_status()
             host = r.url.host or ""
             if not host.endswith("yahoo.co.jp"):
                 # 被轉到別的網站：常見原因是地區限制（例如歐洲無法使用日本雅虎）或網路被攔截
@@ -259,9 +266,43 @@ async def check_connection() -> dict[str, Any]:
 
 # --------------------------------------------------------------------------- 搜尋
 
+def _norm(text: Any) -> str:
+    """比對用：全形 / 半形統一（ｼﾞｬﾝｸ = ジャンク、Ｘ１００Ｖ = X100V），不分大小寫。"""
+    return unicodedata.normalize("NFKC", str(text or "")).lower()
+
+
+def search_keyword(task: dict[str, Any]) -> str:
+    """關鍵字 + 排除字（寫成「-字」）。
+
+    排除字交給日拍先過濾：每頁拿到的都是有用的商品，不會被配件、ジャンク 佔掉名額。
+    本地的標題過濾仍然保留，這裡只是讓日拍先擋掉大部分。
+    """
+    kw = " ".join(str(task.get("keyword") or "").split())
+    parts = [kw]
+    for w in task.get("exclude_words") or []:
+        w = str(w).strip()
+        if not w or w.startswith("-") or '"' in w or any(ch.isspace() for ch in w):
+            continue  # 含空白 / 特殊符號的留給本地過濾
+        if _norm(w) in _norm(kw):
+            continue  # 關鍵字本身就含這個字時不要送出，否則會互相抵銷
+        parts.append("-" + w)
+        if len(parts) > MAX_QUERY_EXCLUDES:
+            break
+    return " ".join(parts)
+
+
+def market_floor(task: dict[str, Any]) -> int:
+    """行情的價格下限：低於 min_price 的成交多半是配件 / 零件，會把行情拉低。"""
+    return int(task.get("market_min_price") or task.get("min_price") or 1)
+
+
 def build_search_params(task: dict[str, Any], page: int, *, closed: bool = False) -> dict[str, Any]:
-    params: dict[str, Any] = {"p": task["keyword"], "n": 50, "b": 1 + (page - 1) * 50, "ei": "utf-8"}
-    if not closed:
+    params: dict[str, Any] = {"p": search_keyword(task), "n": PAGE_SIZE, "b": 1 + (page - 1) * PAGE_SIZE, "ei": "utf-8"}
+    if closed:
+        # 成交行情：直接請日拍只回傳下限以上的成交，100 筆樣本全部都是有效的
+        if market_floor(task) > 1:
+            params["aucminprice"] = market_floor(task)
+    else:
         sort = task.get("sort", "new")
         if sort == "new":
             params.update(s1="new", o1="d")       # 新上架優先：撿漏最重要
@@ -278,6 +319,10 @@ def build_search_params(task: dict[str, Any], page: int, *, closed: bool = False
             params["fixed"] = 2
         elif lt == "buynow":
             params["fixed"] = 1
+        # 只看個人賣家：請日拍直接排除商店。這個條件會連 PayPayフリマ 一起排除，
+        # 所以只有在「不含フリマ」時才送出；要含フリマ時仍由本地過濾。
+        if task.get("individual_only") and not task.get("include_fleamarket", True):
+            params["abatch"] = 2
     cond = task.get("condition", "any")
     if cond == "new":
         params["istatus"] = 1
@@ -325,9 +370,18 @@ async def search(client: httpx.AsyncClient, task: dict[str, Any], page: int = 1,
                  retries: int = 2) -> tuple[list[Item], int]:
     base = CLOSED_SEARCH_URL if closed else SEARCH_URL
     url = f"{base}?{urlencode(build_search_params(task, page, closed=closed))}"
-    html = await _get(client, url, retries=retries)
+    html = await _get(client, url, retries=retries, allow_404=True)
     state = _initial_state(_extract_next_data(html))
     listing = (state.get("search") or {}).get("items", {}).get("listing") or {}
+    if "totalResultsAvailable" not in listing:
+        err = (listing.get("error") or {}).get("message") or ""
+        raise YahooError(tr("日拍頁面裡找不到搜尋結果，頁面結構可能改版了") + (f"（{err}）" if err else ""))
+    if (listing.get("metadata") or {}).get("wandQuery"):
+        # 沒有完全符合的商品時，日拍會改回傳「只符合部分關鍵字」的商品（而且不照指定的排序）。
+        # 這些不是使用者要找的東西，當作沒有結果，不要拿去分析。
+        if listing.get("items"):
+            log.info("「%s」沒有完全符合的商品，日拍回傳的是部分符合的結果，已略過", task.get("keyword"))
+        return [], 0
     raws = listing.get("items") or []
     total = int(listing.get("totalResultsAvailable") or 0)
     items = []
@@ -416,18 +470,17 @@ async def fetch_detail(client: httpx.AsyncClient, item: Item) -> Item:
 # --------------------------------------------------------------------------- 落札相場
 
 def _passes_title_filter(title: str, task: dict[str, Any]) -> bool:
-    t = title.lower()
-    if any(w and w.lower() in t for w in task.get("exclude_words") or []):
+    t = _norm(title)
+    if any(w and _norm(w) in t for w in task.get("exclude_words") or []):
         return False
     req = task.get("require_words") or []
-    return all(w.lower() in t for w in req if w)
+    return all(_norm(w) in t for w in req if w)
 
 
 async def market_price(client: httpx.AsyncClient, task: dict[str, Any]) -> dict[str, Any] | None:
     """以「已結束拍賣」(closedsearch) 估算近期成交行情。"""
     items, total = await search(client, task, 1, closed=True)
-    # 低於 min_price 的成交多半是配件 / 零件，會拉低行情，預設排除
-    floor = int(task.get("market_min_price") or task.get("min_price") or 1)
+    floor = market_floor(task)
     prices = sorted(i.price for i in items if i.price >= floor and _passes_title_filter(i.title, task))
     if len(prices) < 3:
         return None
